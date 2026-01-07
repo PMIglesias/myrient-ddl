@@ -529,17 +529,17 @@ class QueueDatabase {
         try {
             this.statements.updateDownload.run({
                 id,
-                state: updates.state,
-                progress: updates.progress,
-                downloadedBytes: updates.downloadedBytes,
-                totalBytes: updates.totalBytes,
-                savePath: updates.savePath,
-                url: updates.url,
-                startedAt: updates.startedAt,
-                completedAt: updates.completedAt,
-                retryCount: updates.retryCount,
-                lastError: updates.lastError,
-                updatedAt: Date.now()
+                state: DownloadState.DOWNLOADING,
+                progress: null,
+                downloadedBytes: info.downloadedBytes || null,
+                url: info.url || null,
+                savePath: info.savePath || null,
+                totalBytes: info.totalBytes || null,
+                startedAt: now,
+                completedAt: null,
+                retryCount: null,
+                lastError: null,
+                updatedAt: now
             });
 
             return true;
@@ -753,11 +753,16 @@ class QueueDatabase {
         try {
             this.statements.updateDownload.run({
                 id,
-                state: DownloadState.DOWNLOADING,
-                url: info.url,
-                savePath: info.savePath,
-                totalBytes: info.totalBytes,
-                startedAt: now,
+                state: DownloadState.COMPLETED,
+                progress: 1.0,
+                downloadedBytes: null,
+                totalBytes: null,
+                savePath: null,
+                url: null,
+                startedAt: null,
+                completedAt: now,
+                retryCount: null,
+                lastError: null,
                 updatedAt: now
             });
 
@@ -845,6 +850,13 @@ class QueueDatabase {
                 this.statements.updateDownload.run({
                     id,
                     state: DownloadState.QUEUED,
+                    progress: null,
+                    downloadedBytes: null,
+                    totalBytes: null,
+                    savePath: null,
+                    url: null,
+                    startedAt: null,
+                    completedAt: null,
                     retryCount,
                     lastError: error,
                     updatedAt: Date.now()
@@ -857,13 +869,20 @@ class QueueDatabase {
             }
 
             // Excedió reintentos, marcar como fallida
-            this.statements.updateDownload.run({
-                id,
-                state: DownloadState.FAILED,
-                retryCount,
-                lastError: error,
-                updatedAt: Date.now()
-            });
+                this.statements.updateDownload.run({
+                    id,
+                    state: DownloadState.FAILED,
+                    progress: null,
+                    downloadedBytes: null,
+                    totalBytes: null,
+                    savePath: null,
+                    url: null,
+                    startedAt: null,
+                    completedAt: null,
+                    retryCount,
+                    lastError: error,
+                    updatedAt: Date.now()
+                });
 
             this._logEvent(id, 'failed', { error, attempts: retryCount });
             log.error(`Descarga ${id} falló después de ${retryCount} intentos: ${error}`);

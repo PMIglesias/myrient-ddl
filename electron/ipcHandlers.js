@@ -8,6 +8,7 @@
 const { ipcMain, dialog } = require('electron');
 const database = require('./database');
 const downloadManager = require('./downloadManager');
+const queueDatabase = require('./queueDatabase');
 const { 
     logger, 
     readJSONFile, 
@@ -150,6 +151,23 @@ function registerHandlers(mainWindow) {
 
             log.info(`Descarga en cola: ${validatedParams.title} (posición ${position})`);
             return { success: true, queued: true, position };
+        }
+
+        // SUPER MEGA HIPER IMPORTANTE : Primero agregar la descarga a la BD si no existe
+        // Esto evita el error de FOREIGN KEY al crear chunks
+        if (!queueDatabase.exists(validatedParams.id)) {
+            queueDatabase.addDownload({
+                id: validatedParams.id,
+                title: validatedParams.title,
+                url: null, // Se establecerá al iniciar
+                savePath: null, // Se establecerá al iniciar
+                downloadPath: validatedParams.downloadPath,
+                preserveStructure: validatedParams.preserveStructure || false,
+                forceOverwrite: validatedParams.forceOverwrite || false,
+                state: 'queued',
+                priority: validatedParams.priority || 1,
+                totalBytes: validatedParams.expectedFileSize || 0
+            });
         }
 
         // Iniciar descarga

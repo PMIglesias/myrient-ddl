@@ -25,6 +25,11 @@ module.exports = {
         
         /** Máximo de reintentos por operación de red */
         maxRetries: 3,
+
+        // NUEVAS OPCIONES OPTIMIZADAS
+        connectTimeout: 10000,      // Timeout específico para conexión
+        responseTimeout: 30000,     // Timeout para respuesta inicial
+        idleTimeout: 60000,         // Timeout para conexiones idle
     },
 
     // =====================
@@ -38,23 +43,23 @@ module.exports = {
         staleTimeout: 300000,
         
         /** Intervalo de actualización de progreso en ms */
-        progressUpdateInterval: 500,
+        progressUpdateInterval: 1000,
         
         /** Timeout para procesar la cola en ms (10 segundos) */
         queueProcessingTimeout: 10000,
         
         /** Delay después de completar/cancelar para procesar cola en ms */
-        queueProcessDelay: 100,
+        queueProcessDelay: 50,
         
         /** Timeout para adquirir lock en ms */
         lockTimeout: 5000,
         
         /** Intervalo para verificar lock en ms */
-        lockCheckInterval: 50,
+        lockCheckInterval: 25,
 
         // =====================
         // DESCARGAS FRAGMENTADAS (CHUNKED)
-        // Block 2 - Multi-thread con Range requests
+        // Multi-thread con Range requests
         // =====================
         chunked: {
             /** 
@@ -62,20 +67,20 @@ module.exports = {
              * Archivos mayores a este tamaño usarán chunks paralelos
              * Default: 25 MB
              */
-            sizeThreshold: 25 * 1024 * 1024,
+            sizeThreshold: 10 * 1024 * 1024,
 
             /**
              * Número de chunks por defecto para archivos grandes
              * Se ajusta automáticamente según el tamaño del archivo
              */
-            defaultChunks: 4,
+            defaultChunks: 8,
 
             /**
              * Máximo número de chunks permitido
              * Más chunks = más conexiones paralelas = potencialmente más velocidad
              * Pero también más overhead y uso de recursos
              */
-            maxChunks: 16,
+            maxChunks: 32,
 
             /**
              * Mínimo número de chunks (incluso para archivos pequeños sobre el umbral)
@@ -87,18 +92,18 @@ module.exports = {
              * Evita crear demasiados chunks pequeños
              * Default: 5 MB
              */
-            minChunkSize: 5 * 1024 * 1024,
+            minChunkSize: 2 * 1024 * 1024,
 
             /**
              * Máximo de chunks descargando simultáneamente por archivo
              * Limita el uso de conexiones para no saturar
              */
-            maxConcurrentChunks: 4,
+            maxConcurrentChunks: 8,
 
             /**
              * Reintentos por chunk individual antes de fallar
              */
-            chunkRetries: 3,
+            chunkRetries: 5,
 
             /**
              * Verificar soporte de Range requests antes de fragmentar
@@ -109,11 +114,11 @@ module.exports = {
             /**
              * Timeout para verificar soporte de Range (ms)
              */
-            rangeSupportTimeout: 10000,
+            rangeSupportTimeout: 5000,
 
             /**
              * Forzar descarga simple (desactivar chunks)
-             * Útil para debugging o servidores problemáticos
+             * Útil para debugging o el servidor culiao es problemático
              */
             forceSimpleDownload: false,
 
@@ -121,7 +126,7 @@ module.exports = {
              * Intervalo de actualización de progreso por chunk (ms)
              * Más frecuente = UI más responsive pero más CPU
              */
-            chunkProgressInterval: 200,
+            chunkProgressInterval: 500,
 
             /**
              * Eliminar archivos temporales de chunks al completar
@@ -134,6 +139,39 @@ module.exports = {
              * Permite reanudación más rápida
              */
             preserveOnPause: true,
+            
+            /**
+             * Habilitar concurrencia adaptativa
+             * Ajusta automáticamente el número de chunks según velocidad
+             */
+            adaptiveConcurrency: true,
+
+            /**
+             * Pre-allocar espacio en disco antes de descargar
+             * Reduce fragmentación
+             */
+            preallocateFile: true,
+
+            /**
+             * Intervalo para batch de actualizaciones a BD (ms)
+             * En lugar de escribir cada progreso, se acumulan
+             */
+            dbBatchInterval: 2000,
+
+            /**
+             * Buffer para fusión de chunks (64MB)
+             */
+            mergeBufferSize: 64 * 1024 * 1024,
+
+            /**
+             * Velocidad objetivo por chunk para ajuste adaptativo
+             */
+            targetSpeedPerChunk: 5 * 1024 * 1024,
+
+            /**
+             * Umbral de backpressure para reducir concurrencia
+             */
+            backpressureThreshold: 5,
         },
     },
 
@@ -142,7 +180,7 @@ module.exports = {
     // =====================
     ui: {
         /** Throttle para actualizaciones de progreso IPC en ms */
-        progressThrottle: 250,
+        progressThrottle: 200,
         
         /** Debounce para búsqueda en ms */
         searchDebounce: 300,

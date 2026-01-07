@@ -4,16 +4,6 @@
  * Implementa descargas paralelas dividiendo archivos grandes en fragmentos (chunks)
  * que se descargan simultáneamente usando HTTP Range headers.
  * 
- * Características:
- * - Descargas paralelas configurables (2-16 chunks)
- * - Persistencia de estado en SQLite para recuperación ante crashes
- * - Reanudación de chunks individuales interrumpidos
- * - Fusión automática de fragmentos al completar
- * - Backpressure handling para evitar saturación de memoria
- * - Progreso agregado con velocidad por chunk
- * 
- * @module ChunkedDownloader
- * @version 2.0.0 - Block 2 Implementation
  */
 
 const fs = require('fs');
@@ -22,7 +12,7 @@ const { net } = require('electron');
 const config = require('./config');
 const { logger, safeUnlink } = require('./utils');
 const queueDatabase = require('./queueDatabase');
-
+const ProgressBatcher = require('./progressBatcher');
 const log = logger.child('ChunkedDownloader');
 
 // Estados de chunk
@@ -138,7 +128,10 @@ class ChunkDownload {
         const writeMode = (this.downloadedBytes > 0 && response.statusCode === 206) ? 'a' : 'w';
         
         try {
-            this.fileStream = fs.createWriteStream(this.tempFile, { flags: writeMode });
+            this.fileStream = fs.createWriteStream(this.tempFile, { 
+                flags: writeMode,
+                highWaterMark: config.downloads.writeBufferSize || (1024 * 1024) // 1MB buffer
+            });
             this.fileStream.setMaxListeners(15);
         } catch (error) {
             this._handleError(error);
@@ -330,17 +323,7 @@ class ChunkDownload {
  * Clase principal para descargas fragmentadas
  */
 class ChunkedDownloader {
-    /**
-     * @param {Object} options - Opciones de configuración
-     * @param {number} options.downloadId - ID de la descarga en BD
-     * @param {string} options.url - URL del archivo
-     * @param {string} options.savePath - Ruta final del archivo
-     * @param {number} options.totalBytes - Tamaño total del archivo
-     * @param {number} [options.numChunks] - Número de chunks (auto-calculado si no se especifica)
-     * @param {Function} [options.onProgress] - Callback de progreso
-     * @param {Function} [options.onComplete] - Callback de completado
-     * @param {Function} [options.onError] - Callback de error
-     */
+
     constructor(options) {
         this.downloadId = options.downloadId;
         this.url = options.url;
@@ -370,6 +353,16 @@ class ChunkedDownloader {
         this.maxConcurrentChunks = config.downloads.chunked?.maxConcurrentChunks || 4;
         this.chunkRetries = config.downloads.chunked?.chunkRetries || 3;
         
+        // Concurrencia adaptativa
+        this.adaptiveConcurrency = config.downloads.chunked?.adaptiveConcurrency || false;
+        this.currentConcurrency = this.maxConcurrentChunks;
+        this.backpressureCount = 0;
+        
+        // Progress batcher
+        this.progressBatcher = new ProgressBatcher(queueDatabase, 
+            config.downloads.chunked?.dbBatchInterval || 2000
+        );
+
         log.info(`ChunkedDownloader creado: ${this.title} (${this._formatBytes(this.totalBytes)}, ${this.numChunks} chunks)`);
     }
 
@@ -394,6 +387,70 @@ class ChunkedDownloader {
     }
 
     /**
+     * Ajusta la concurrencia dinámicamente basado en rendimiento
+     */
+    _adjustConcurrency() {
+        if (!this.adaptiveConcurrency) return;
+        
+        // Calcular velocidad promedio de chunks activos
+        let totalSpeed = 0;
+        let activeCount = 0;
+        
+        this.activeChunks.forEach(chunk => {
+            if (chunk.speed > 0) {
+                totalSpeed += chunk.speed;
+                activeCount++;
+            }
+        });
+
+        if (activeCount === 0) return;
+        
+        const avgSpeed = totalSpeed / activeCount;
+        const targetSpeed = config.downloads.chunked?.targetSpeedPerChunk || (5 * 1024 * 1024);
+        const backpressureThreshold = config.downloads.chunked?.backpressureThreshold || 5;
+        
+        // Si velocidad es baja y no hay mucho backpressure, aumentar concurrencia
+        if (avgSpeed < targetSpeed && this.backpressureCount < backpressureThreshold) {
+            if (this.currentConcurrency < this.maxConcurrentChunks) {
+                this.currentConcurrency = Math.min(
+                    this.currentConcurrency + 1,
+                    this.maxConcurrentChunks
+                );
+                log.debug(`Concurrencia aumentada a ${this.currentConcurrency}`);
+            }
+        }
+        // Si hay mucho backpressure, reducir
+        else if (this.backpressureCount >= backpressureThreshold) {
+            if (this.currentConcurrency > 2) {
+                this.currentConcurrency = Math.max(2, this.currentConcurrency - 1);
+                log.debug(`Concurrencia reducida a ${this.currentConcurrency}`);
+            }
+            this.backpressureCount = 0; // Reset counter
+        }
+    }
+
+    /**
+     * Crea un archivo pre localizado
+     */
+    async _preallocateFile() {
+        if (!config.downloads.chunked?.preallocateFile) return;
+        if (this.totalBytes <= 0) return;
+        
+        try {
+            // Solo pre-allocar si el archivo no existe
+            if (!fs.existsSync(this.savePath)) {
+                const fd = await fs.promises.open(this.savePath, 'w');
+                await fd.truncate(this.totalBytes);
+                await fd.close();
+                log.info(`Pre-allocated ${this._formatBytes(this.totalBytes)} para ${this.title}`);
+            }
+        } catch (e) {
+            log.warn('Pre-allocation falló:', e.message);
+            // No es crítico, continuar sin pre-allocation
+        }
+    }
+
+    /**
      * Inicia la descarga fragmentada
      */
     async start() {
@@ -410,7 +467,10 @@ class ChunkedDownloader {
         try {
             // Verificar o crear chunks en la BD
             await this._initializeChunks();
-
+            
+            // NUEVO: Pre-allocar espacio
+            await this._preallocateFile();
+            
             // Iniciar chunks pendientes
             await this._startPendingChunks();
 
@@ -448,7 +508,139 @@ class ChunkedDownloader {
                 onError: (chunk, error) => this._onChunkError(chunk, error)
             }));
 
-            // Calcular bytes ya descargados
+            // VALIDACIÓN CRÍTICA: Verificar que los chunks "completados" realmente tengan 
+            // el archivo temporal con el tamaño correcto.
+            let chunksFixed = 0;
+            
+            // DEBUG: Log de estados antes de validación
+            const statesSummary = {};
+            this.chunks.forEach(c => {
+                statesSummary[c.state] = (statesSummary[c.state] || 0) + 1;
+            });
+            log.debug(`Estados de chunks antes de validación: ${JSON.stringify(statesSummary)}`);
+            
+            for (const chunk of this.chunks) {
+                // Normalizar estados que quedaron en 'downloading' de una sesión anterior
+                if (chunk.state === ChunkState.DOWNLOADING || chunk.state === 'downloading') {
+                    log.debug(`Chunk ${chunk.chunkIndex}: estado 'downloading' de sesión anterior, reseteando a pending`);
+                    chunk.state = ChunkState.PENDING;
+                    
+                    // Sincronizar con archivo temporal si existe
+                    if (chunk.tempFile && fs.existsSync(chunk.tempFile)) {
+                        try {
+                            const stats = fs.statSync(chunk.tempFile);
+                            chunk.downloadedBytes = stats.size;
+                        } catch (e) {
+                            chunk.downloadedBytes = 0;
+                        }
+                    } else {
+                        chunk.downloadedBytes = 0;
+                    }
+                    
+                    queueDatabase.updateChunk(this.downloadId, chunk.chunkIndex, {
+                        downloadedBytes: chunk.downloadedBytes,
+                        state: ChunkState.PENDING
+                    });
+                    chunksFixed++;
+                }
+                // Normalizar estado 'failed' - también debe reintentar
+                else if (chunk.state === ChunkState.FAILED || chunk.state === 'failed') {
+                    log.debug(`Chunk ${chunk.chunkIndex}: estado 'failed', reseteando a pending para reintentar`);
+                    chunk.state = ChunkState.PENDING;
+                    
+                    // Sincronizar con archivo temporal si existe
+                    if (chunk.tempFile && fs.existsSync(chunk.tempFile)) {
+                        try {
+                            const stats = fs.statSync(chunk.tempFile);
+                            chunk.downloadedBytes = stats.size;
+                        } catch (e) {
+                            chunk.downloadedBytes = 0;
+                        }
+                    } else {
+                        chunk.downloadedBytes = 0;
+                    }
+                    
+                    queueDatabase.updateChunk(this.downloadId, chunk.chunkIndex, {
+                        downloadedBytes: chunk.downloadedBytes,
+                        state: ChunkState.PENDING
+                    });
+                    chunksFixed++;
+                }
+                else if (chunk.state === ChunkState.COMPLETED) {
+                    const expectedSize = chunk.endByte - chunk.startByte + 1;
+                    
+                    if (!fs.existsSync(chunk.tempFile)) {
+                        // Archivo no existe, resetear chunk
+                        log.warn(`Chunk ${chunk.chunkIndex}: marcado como completado pero archivo no existe, reiniciando`);
+                        chunk.state = ChunkState.PENDING;
+                        chunk.downloadedBytes = 0;
+                        chunksFixed++;
+                        
+                        queueDatabase.updateChunk(this.downloadId, chunk.chunkIndex, {
+                            downloadedBytes: 0,
+                            state: ChunkState.PENDING
+                        });
+                    } else {
+                        try {
+                            const stats = fs.statSync(chunk.tempFile);
+                            if (stats.size < expectedSize) {
+                                // Archivo incompleto, resetear chunk
+                                log.warn(`Chunk ${chunk.chunkIndex}: archivo incompleto (${stats.size}/${expectedSize} bytes), reiniciando`);
+                                chunk.state = ChunkState.PENDING;
+                                chunk.downloadedBytes = stats.size;
+                                chunksFixed++;
+                                
+                                queueDatabase.updateChunk(this.downloadId, chunk.chunkIndex, {
+                                    downloadedBytes: stats.size,
+                                    state: ChunkState.PENDING
+                                });
+                            }
+                        } catch (e) {
+                            // Error leyendo archivo, resetear chunk
+                            log.warn(`Chunk ${chunk.chunkIndex}: error verificando archivo (${e.message}), reiniciando`);
+                            chunk.state = ChunkState.PENDING;
+                            chunk.downloadedBytes = 0;
+                            chunksFixed++;
+                            
+                            queueDatabase.updateChunk(this.downloadId, chunk.chunkIndex, {
+                                downloadedBytes: 0,
+                                state: ChunkState.PENDING
+                            });
+                        }
+                    }
+                } else if (chunk.state === ChunkState.PENDING || chunk.state === ChunkState.PAUSED) {
+                    // Para chunks pendientes/pausados, sincronizar con tamaño real del archivo
+                    if (fs.existsSync(chunk.tempFile)) {
+                        try {
+                            const stats = fs.statSync(chunk.tempFile);
+                            if (stats.size !== chunk.downloadedBytes) {
+                                log.debug(`Chunk ${chunk.chunkIndex}: sincronizando bytes (archivo: ${stats.size}, BD: ${chunk.downloadedBytes})`);
+                                chunk.downloadedBytes = stats.size;
+                                
+                                queueDatabase.updateChunk(this.downloadId, chunk.chunkIndex, {
+                                    downloadedBytes: stats.size
+                                });
+                            }
+                        } catch (e) {
+                            // Ignorar errores de lectura
+                        }
+                    } else if (chunk.downloadedBytes > 0) {
+                        // Archivo no existe pero BD dice que hay bytes descargados
+                        log.debug(`Chunk ${chunk.chunkIndex}: archivo no existe, reseteando downloadedBytes`);
+                        chunk.downloadedBytes = 0;
+                        
+                        queueDatabase.updateChunk(this.downloadId, chunk.chunkIndex, {
+                            downloadedBytes: 0
+                        });
+                    }
+                }
+            }
+            
+            if (chunksFixed > 0) {
+                log.info(`Corregidos ${chunksFixed} chunks con estado inconsistente`);
+            }
+
+            // Calcular bytes ya descargados (después de la validación)
             this.totalDownloadedBytes = this.chunks.reduce((sum, c) => sum + c.downloadedBytes, 0);
             this.completedChunks = this.chunks.filter(c => c.state === ChunkState.COMPLETED).length;
 
@@ -508,7 +700,7 @@ class ChunkedDownloader {
 
         // Calcular cuántos slots disponibles hay
         const activeCount = this.activeChunks.size;
-        const slotsAvailable = this.maxConcurrentChunks - activeCount;
+        const slotsAvailable = this.currentConcurrency - activeCount;
 
         if (slotsAvailable <= 0 || pendingChunks.length === 0) {
             return;
@@ -537,8 +729,8 @@ class ChunkedDownloader {
     _onChunkProgress(info) {
         if (this.isAborted) return;
 
-        // Actualizar estado en BD
-        queueDatabase.updateChunk(this.downloadId, info.chunkIndex, {
+        // Actualiza la base de datos con batcher
+        this.progressBatcher.queueChunkUpdate(this.downloadId, info.chunkIndex, {
             downloadedBytes: info.downloadedBytes,
             state: ChunkState.DOWNLOADING
         });
@@ -547,14 +739,13 @@ class ChunkedDownloader {
         const totalDownloaded = this.chunks.reduce((sum, c) => sum + c.downloadedBytes, 0);
         const overallProgress = totalDownloaded / this.totalBytes;
 
+        this.progressBatcher.queueProgressUpdate(this.downloadId, overallProgress, totalDownloaded);
+
         // Calcular velocidad total (suma de velocidades de chunks activos)
         let totalSpeed = 0;
         this.activeChunks.forEach(chunk => {
             totalSpeed += chunk.speed || 0;
         });
-
-        // Actualizar progreso en BD principal
-        queueDatabase.updateProgress(this.downloadId, overallProgress, totalDownloaded);
 
         // Notificar callback
         this.onProgress({
@@ -573,13 +764,19 @@ class ChunkedDownloader {
                 speed: c.speed
             }))
         });
+
+        // Ajustar concurrencia periódicamente
+        this._adjustConcurrency();
     }
 
     /**
      * Callback cuando un chunk se completa
      */
-    _onChunkComplete(chunk) {
+    async _onChunkComplete(chunk) {
         log.info(`Chunk ${chunk.chunkIndex} completado`);
+
+        // Flush pendientes de este chunk antes de marcar completado
+        await this.progressBatcher.flushDownload(this.downloadId);
 
         // Actualizar BD
         queueDatabase.updateChunk(this.downloadId, chunk.chunkIndex, {
@@ -621,6 +818,40 @@ class ChunkedDownloader {
             // Resetear estado para reintento
             chunk.state = ChunkState.PENDING;
             chunk.isAborted = false;
+            
+            // IMPORTANTE: Si el archivo temporal fue eliminado, resetear downloadedBytes
+            if (!fs.existsSync(chunk.tempFile)) {
+                log.debug(`Chunk ${chunk.chunkIndex}: archivo temporal eliminado, reiniciando desde byte ${chunk.startByte}`);
+                chunk.downloadedBytes = 0;
+                
+                // Actualizar BD
+                queueDatabase.updateChunk(this.downloadId, chunk.chunkIndex, {
+                    downloadedBytes: 0,
+                    state: ChunkState.PENDING
+                });
+            } else {
+                // Si el archivo existe, verificar su tamaño real y sincronizar
+                try {
+                    const stats = fs.statSync(chunk.tempFile);
+                    if (stats.size !== chunk.downloadedBytes) {
+                        log.debug(`Chunk ${chunk.chunkIndex}: sincronizando bytes (archivo: ${stats.size}, memoria: ${chunk.downloadedBytes})`);
+                        chunk.downloadedBytes = stats.size;
+                        
+                        queueDatabase.updateChunk(this.downloadId, chunk.chunkIndex, {
+                            downloadedBytes: stats.size,
+                            state: ChunkState.PENDING
+                        });
+                    }
+                } catch (e) {
+                    // Si hay error leyendo el archivo, resetear
+                    log.debug(`Chunk ${chunk.chunkIndex}: error leyendo archivo temporal, reiniciando`);
+                    chunk.downloadedBytes = 0;
+                    queueDatabase.updateChunk(this.downloadId, chunk.chunkIndex, {
+                        downloadedBytes: 0,
+                        state: ChunkState.PENDING
+                    });
+                }
+            }
 
             // Reintentar después de un delay exponencial
             const delay = Math.min(1000 * Math.pow(2, chunk.retryCount), 10000);
@@ -649,97 +880,74 @@ class ChunkedDownloader {
     }
 
     /**
-     * Fusiona todos los chunks en el archivo final
+     * Fusiona todos los chunks en el archivo final (versión optimizada)
      */
     async _mergeChunks() {
         if (this.mergeInProgress) return;
         this.mergeInProgress = true;
         this.state = 'merging';
 
-        log.info(`Fusionando ${this.chunks.length} chunks en ${this.savePath}`);
+        log.info(`Iniciando fusión optimizada de ${this.chunks.length} chunks`);
 
-        // Notificar estado de fusión
-        this.onProgress({
-            downloadId: this.downloadId,
-            state: 'merging',
-            percent: 1,
-            downloadedBytes: this.totalBytes,
-            totalBytes: this.totalBytes
-        });
+        const BUFFER_SIZE = config.downloads.chunked?.mergeBufferSize || (64 * 1024 * 1024);
 
         try {
-            // Verificar que todos los chunks existen
-            for (const chunk of this.chunks) {
-                if (!fs.existsSync(chunk.tempFile)) {
-                    throw new Error(`Chunk ${chunk.chunkIndex} no encontrado: ${chunk.tempFile}`);
-                }
+            // Usar handle de archivo para control preciso
+            const finalHandle = await fs.promises.open(this.savePath, 'w');
+            let position = 0;
 
-                const stats = fs.statSync(chunk.tempFile);
-                const expectedSize = chunk.endByte - chunk.startByte + 1;
+            for (let i = 0; i < this.chunks.length; i++) {
+                const chunk = this.chunks[i];
+                const chunkSize = chunk.endByte - chunk.startByte + 1;
                 
-                if (stats.size < expectedSize) {
-                    throw new Error(`Chunk ${chunk.chunkIndex} incompleto: ${stats.size}/${expectedSize}`);
-                }
-            }
+                log.debug(`Fusionando chunk ${i + 1}/${this.chunks.length}`);
 
-            // Crear archivo de destino
-            const finalDir = path.dirname(this.savePath);
-            if (!fs.existsSync(finalDir)) {
-                fs.mkdirSync(finalDir, { recursive: true });
-            }
+                const chunkHandle = await fs.promises.open(chunk.tempFile, 'r');
+                const buffer = Buffer.allocUnsafe(Math.min(BUFFER_SIZE, chunkSize));
+                
+                try {
+                    let bytesProcessed = 0;
 
-            // Si existe archivo previo, eliminarlo
-            if (fs.existsSync(this.savePath)) {
-                fs.unlinkSync(this.savePath);
-            }
+                    while (bytesProcessed < chunkSize) {
+                        const toRead = Math.min(buffer.length, chunkSize - bytesProcessed);
+                        const { bytesRead } = await chunkHandle.read(
+                            buffer, 0, toRead, bytesProcessed
+                        );
 
-            // Fusionar chunks en orden
-            const writeStream = fs.createWriteStream(this.savePath);
+                        if (bytesRead === 0) break;
 
-            await new Promise((resolve, reject) => {
-                writeStream.on('error', reject);
-                writeStream.on('finish', resolve);
-
-                // Función recursiva para escribir chunks en orden
-                const writeChunk = (index) => {
-                    if (index >= this.chunks.length) {
-                        writeStream.end();
-                        return;
+                        await finalHandle.write(buffer, 0, bytesRead, position);
+                        position += bytesRead;
+                        bytesProcessed += bytesRead;
                     }
+                } finally {
+                    await chunkHandle.close();
+                }
 
-                    const chunk = this.chunks[index];
-                    const readStream = fs.createReadStream(chunk.tempFile);
+                // Eliminar temp file inmediatamente para liberar espacio
+                try {
+                    await fs.promises.unlink(chunk.tempFile);
+                } catch (e) {
+                    log.warn(`Error eliminando temp ${chunk.tempFile}:`, e.message);
+                }
 
-                    readStream.on('error', reject);
-                    readStream.on('end', () => {
-                        log.debug(`Chunk ${index} fusionado`);
-                        writeChunk(index + 1);
-                    });
+                // Actualizar progreso de fusión
+                this.onProgress({
+                    downloadId: this.downloadId,
+                    state: 'merging',
+                    mergeProgress: (i + 1) / this.chunks.length
+                });
+            }
 
-                    readStream.pipe(writeStream, { end: false });
-                };
-
-                writeChunk(0);
-            });
+            await finalHandle.close();
 
             // Verificar tamaño final
-            const finalStats = fs.statSync(this.savePath);
+            const finalStats = await fs.promises.stat(this.savePath);
             if (finalStats.size !== this.totalBytes) {
                 throw new Error(`Tamaño final incorrecto: ${finalStats.size}/${this.totalBytes}`);
             }
 
             log.info(`Fusión completada: ${this._formatBytes(finalStats.size)}`);
-
-            // Eliminar archivos temporales
-            for (const chunk of this.chunks) {
-                try {
-                    if (fs.existsSync(chunk.tempFile)) {
-                        fs.unlinkSync(chunk.tempFile);
-                    }
-                } catch (e) {
-                    log.warn(`Error eliminando temp file ${chunk.tempFile}:`, e.message);
-                }
-            }
 
             // Limpiar chunks de la BD
             this.chunks.forEach(chunk => {
@@ -765,8 +973,6 @@ class ChunkedDownloader {
             log.error('Error en fusión:', error);
             this.state = 'failed';
             this.mergeInProgress = false;
-
-            // No eliminar chunks para permitir reintento
             this.onError(this, error);
         }
     }
@@ -864,6 +1070,12 @@ class ChunkedDownloader {
     destroy() {
         this.cancel(true); // Mantener archivos por si se quiere reanudar
         this.chunks = [];
+
+        if (this.progressBatcher) {
+            this.progressBatcher.destroy();
+            this.progressBatcher = null;
+        }
+
         this.onProgress = () => {};
         this.onComplete = () => {};
         this.onError = () => {};
@@ -902,7 +1114,6 @@ class ChunkedDownloader {
 
     /**
      * Verifica si el servidor soporta Range requests
-     * @static
      */
     static async checkRangeSupport(url) {
         return new Promise((resolve) => {
