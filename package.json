@@ -1,0 +1,66 @@
+{
+  "name": "myrient-ddl",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Explorador y gestor de descargas para Myrient",
+  "main": "electron/main.js",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build && electron-builder",
+    "postinstall": "electron-builder install-app-deps"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.5.0",
+    "electron-log": "^5.4.3",
+    "rimraf": "^6.1.2",
+    "vue": "^3.5.26",
+    "zod": "^4.3.5"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^6.0.3",
+    "electron": "^39.2.7",
+    "electron-builder": "^26.0.12",
+    "vite": "^7.3.0",
+    "vite-plugin-electron": "^0.29.0",
+    "vite-plugin-electron-renderer": "^0.14.6"
+  },
+  "build": {
+    "appId": "com.user.myrientapp",
+    "productName": "Myrient Downloader",
+    "asar": true,
+    "directories": {
+      "output": "dist-electron"
+    },
+    "files": [
+      "dist/**",
+      "electron/**"
+    ],
+    "extraResources": [
+      {
+        "from": "resources",
+        "to": "",
+        "filter": [
+          "!**/*.db",
+          "!**/*.7z"
+        ]
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.utilities"
+    }
+  }
+}
