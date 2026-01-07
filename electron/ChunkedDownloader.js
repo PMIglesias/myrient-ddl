@@ -270,7 +270,9 @@ class ChunkDownload {
         if (this.request) {
             try {
                 this.request.abort();
-            } catch (e) {}
+            } catch (e) {
+                log.debug(`Chunk ${this.chunkIndex} cleanup request: ${e.message}`);
+            }
             this.request = null;
         }
 
@@ -281,7 +283,9 @@ class ChunkDownload {
                 if (!this.response.destroyed) {
                     this.response.destroy();
                 }
-            } catch (e) {}
+            } catch (e) {
+                log.debug(`Chunk ${this.chunkIndex} cleanup response: ${e.message}`);
+            }
             this.response = null;
         }
 
@@ -292,7 +296,9 @@ class ChunkDownload {
                 if (!this.fileStream.destroyed) {
                     this.fileStream.end();
                 }
-            } catch (e) {}
+            } catch (e) {
+                log.debug(`Chunk ${this.chunkIndex} cleanup fileStream: ${e.message}`);
+            }
             this.fileStream = null;
         }
 
@@ -508,7 +514,7 @@ class ChunkedDownloader {
                 onError: (chunk, error) => this._onChunkError(chunk, error)
             }));
 
-            // VALIDACIÓN CRÍTICA: Verificar que los chunks "completados" realmente tengan 
+            // VALIDACIÍ“N CRÍTICA: Verificar que los chunks "completados" realmente tengan 
             // el archivo temporal con el tamaño correcto.
             let chunksFixed = 0;
             
@@ -1037,7 +1043,9 @@ class ChunkedDownloader {
                         state: 'cancelled',
                         downloadedBytes: 0
                     });
-                } catch (e) {}
+                } catch (e) {
+                    log.warn(`Error actualizando chunk ${chunk.chunkIndex} en BD:`, e.message);
+                }
             });
         }
 

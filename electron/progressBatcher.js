@@ -37,7 +37,7 @@ class ProgressBatcher {
     /**
      * Encola una actualización de chunk
      * @param {number} downloadId - ID de la descarga
-     * @param {number} chunkIndex - Índice del chunk
+     * @param {number} chunkIndex - Índice del chunk
      * @param {Object} data - Datos a actualizar (downloadedBytes, state, etc.)
      */
     queueChunkUpdate(downloadId, chunkIndex, data) {
@@ -238,7 +238,9 @@ class ProgressBatcher {
                             downloadedBytes: update.downloadedBytes,
                             state: update.state
                         });
-                    } catch (e) {}
+                    } catch (e) {
+                        log.warn(`Error guardando chunk ${update.downloadId}-${update.chunkIndex}:`, e.message);
+                    }
                 }
                 
                 if (progressUpdate) {
@@ -248,7 +250,9 @@ class ProgressBatcher {
                             progressUpdate.progress,
                             progressUpdate.downloadedBytes
                         );
-                    } catch (e) {}
+                    } catch (e) {
+                        log.warn(`Error guardando progreso ${progressUpdate.downloadId}:`, e.message);
+                    }
                 }
             });
             

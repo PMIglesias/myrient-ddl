@@ -87,7 +87,7 @@ class DownloadManager {
 
 
     // =====================
-    // GESTIÓN DE LOCK
+    // GESTIÍ“N DE LOCK
     // =====================
 
     /**
@@ -114,7 +114,7 @@ class DownloadManager {
     }
 
     // =====================
-    // GESTIÓN DE COLA
+    // GESTIÍ“N DE COLA
     // =====================
 
     /**
@@ -205,7 +205,7 @@ class DownloadManager {
     }
 
     // =============================
-    // GESTIÓN DE DESCARGAS ACTIVAS
+    // GESTIÍ“N DE DESCARGAS ACTIVAS
     // =============================
 
     getActiveDownload(id) {
@@ -450,7 +450,7 @@ class DownloadManager {
             }
 
             // =====================================
-            // DECISIÓN: Simple vs Fragmentada
+            // DECISIÍ“N: Simple vs Fragmentada
             // =====================================
             const useChunked = await this._shouldUseChunkedDownload(downloadUrl, expectedFileSize);
             
@@ -508,7 +508,7 @@ class DownloadManager {
                 return false;
             }
             
-            log.debug('Servidor soporta Range requests ✓');
+            log.debug('Servidor soporta Range requests âœ“');
         }
         
         return true;
@@ -1080,13 +1080,13 @@ class DownloadManager {
                 
                 // Limpiar sin eliminar archivos
                 if (download.request) {
-                    try { download.request.abort(); } catch (e) {}
+                    try { download.request.abort(); } catch (e) { log.debug(`Pause cleanup request ${downloadId}:`, e.message); }
                 }
                 if (download.fileStream) {
-                    try { download.fileStream.end(); } catch (e) {}
+                    try { download.fileStream.end(); } catch (e) { log.debug(`Pause cleanup fileStream ${downloadId}:`, e.message); }
                 }
                 if (download.response) {
-                    try { download.response.removeAllListeners(); } catch (e) {}
+                    try { download.response.removeAllListeners(); } catch (e) { log.debug(`Pause cleanup response ${downloadId}:`, e.message); }
                 }
 
                 this.activeDownloads.delete(downloadId);
@@ -1310,7 +1310,7 @@ class DownloadManager {
     }
 
     // =====================
-    // MÉTODOS PRIVADOS
+    // MÍ‰TODOS PRIVADOS
     // =====================
 
     /**
@@ -1461,7 +1461,9 @@ class DownloadManager {
                     download.fileStream.removeAllListeners();
                     download.fileStream.destroy();
                 }
-            } catch (e) {}
+            } catch (e) {
+                log.debug(`Cleanup fileStream ${id}:`, e.message);
+            }
         }
 
         if (download.response) {
@@ -1470,14 +1472,18 @@ class DownloadManager {
                     download.response.removeAllListeners();
                     download.response.destroy();
                 }
-            } catch (e) {}
+            } catch (e) {
+                log.debug(`Cleanup response ${id}:`, e.message);
+            }
         }
 
         if (download.request) {
             try {
                 download.request.removeAllListeners();
                 download.request.abort();
-            } catch (e) {}
+            } catch (e) {
+                log.debug(`Cleanup request ${id}:`, e.message);
+            }
         }
 
         if (!keepPartialFile) {
@@ -1506,14 +1512,18 @@ class DownloadManager {
                     if (handlers.responseEndHandler) response.removeListener('end', handlers.responseEndHandler);
                     if (handlers.responseErrorHandler) response.removeListener('error', handlers.responseErrorHandler);
                     if (handlers.responseCloseHandler) response.removeListener('close', handlers.responseCloseHandler);
-                } catch (e) {}
+                } catch (e) {
+                    log.debug(`Remove response handlers ${id}:`, e.message);
+                }
             }
             
             if (fileStream) {
                 try {
                     if (handlers.fileStreamErrorHandler) fileStream.removeListener('error', handlers.fileStreamErrorHandler);
                     if (handlers.drainHandler) fileStream.removeListener('drain', handlers.drainHandler);
-                } catch (e) {}
+                } catch (e) {
+                    log.debug(`Remove fileStream handlers ${id}:`, e.message);
+                }
             }
             
             this.downloadHandlers.delete(id);
@@ -1539,7 +1549,11 @@ class DownloadManager {
         ].forEach(([obj, evts]) => {
             if (obj) {
                 evts.forEach(evt => {
-                    try { obj.removeAllListeners(evt); } catch (e) {}
+                    try { 
+                        obj.removeAllListeners(evt); 
+                    } catch (e) { 
+                        log.debug(`Remove listener ${evt}:`, e.message); 
+                    }
                 });
             }
         });

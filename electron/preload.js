@@ -1,11 +1,18 @@
 /**
- * Preload script - Bridge seguro entre la capa culiada de main y renderer
+ * Preload script - Bridge seguro entre main y renderer
  * 
  * Este script se ejecuta en un contexto aislado y expone
  * una API limitada y segura al proceso renderer.
+ * 
+ * SEGURIDAD: Todos los canales IPC deben estar en las whitelists
+ * y se validan antes de cada invocación.
  */
 
 const { contextBridge, ipcRenderer } = require('electron');
+
+// =====================
+// WHITELISTS DE CANALES IPC
+// =====================
 
 // Canales IPC permitidos para eventos (one-way, main -> renderer)
 const validEventChannels = [
@@ -14,24 +21,87 @@ const validEventChannels = [
 
 // Canales IPC permitidos para invocaciones (two-way, renderer <-> main)
 const validInvokeChannels = [
+    // Base de datos
     'search-db',
     'get-children',
     'get-ancestors',
     'get-node-info',
     'get-db-update-date',
+    // Descargas
     'download-file',
+    'pause-download',  
     'cancel-download',
     'get-download-stats',
+    // Configuración
     'read-config-file',
     'write-config-file',
+    // Ventana
     'window-minimize',
     'window-maximize',
     'window-close',
+    // Diálogos
     'select-folder'
 ];
 
+// =====================
+// HELPERS DE SEGURIDAD
+// =====================
+
+/**
+ * Invocación segura - valida el canal antes de invocar
+ * @param {string} channel - Canal IPC a invocar
+ * @param  {...any} args - Argumentos para el handler
+ * @returns {Promise} - Resultado de la invocación
+ */
+const safeInvoke = (channel, ...args) => {
+    if (!validInvokeChannels.includes(channel)) {
+        console.error(`[Preload] ⛔ Canal IPC no autorizado: ${channel}`);
+        return Promise.reject(new Error(`Canal IPC no autorizado: ${channel}`));
+    }
+    return ipcRenderer.invoke(channel, ...args);
+};
+
+/**
+ * Suscripción segura a eventos
+ * @param {string} channel - Canal de eventos
+ * @param {Function} callback - Función a ejecutar
+ * @returns {Function} - Función de cleanup
+ */
+const safeOn = (channel, callback) => {
+    if (!validEventChannels.includes(channel)) {
+        console.warn(`[Preload] ⚠️ Canal de eventos no válido: ${channel}`);
+        return () => {}; // Retornar función vacía
+    }
+
+    // Wrapper para el callback con manejo de errores
+    const listener = (_event, ...args) => {
+        try {
+            callback(...args);
+        } catch (error) {
+            console.error(`[Preload] Error en listener de ${channel}:`, error);
+        }
+    };
+
+    ipcRenderer.on(channel, listener);
+
+    // Retornar función de cleanup
+    return () => {
+        try {
+            ipcRenderer.removeListener(channel, listener);
+            console.log(`[Preload] Listener removido: ${channel}`);
+        } catch (error) {
+            console.error(`[Preload] Error removiendo listener de ${channel}:`, error);
+        }
+    };
+};
+
+// =====================
+// API EXPUESTA
+// =====================
+
 /**
  * API expuesta al renderer process
+ * Todas las invocaciones pasan por safeInvoke para validación
  */
 const api = {
     // =====================
@@ -41,33 +111,7 @@ const api = {
     /**
      * Suscribe a un canal de eventos
      */
-    on: (channel, callback) => {
-        if (!validEventChannels.includes(channel)) {
-            console.warn(`[Preload] Canal no válido: ${channel}`);
-            return () => {}; // Retornar función vacía
-        }
-
-        // Wrapper para el callback con manejo de errores
-        const listener = (_event, ...args) => {
-            try {
-                callback(...args);
-            } catch (error) {
-                console.error(`[Preload] Error en listener de ${channel}:`, error);
-            }
-        };
-
-        ipcRenderer.on(channel, listener);
-
-        // Retornar función de cleanup
-        return () => {
-            try {
-                ipcRenderer.removeListener(channel, listener);
-                console.log(`[Preload] Listener removido: ${channel}`);
-            } catch (error) {
-                console.error(`[Preload] Error removiendo listener de ${channel}:`, error);
-            }
-        };
-    },
+    on: safeOn,
 
     // =====================
     // BASE DE DATOS
@@ -76,27 +120,27 @@ const api = {
     /**
      * Busca en la base de datos
      */
-    search: (term) => ipcRenderer.invoke('search-db', term),
+    search: (term) => safeInvoke('search-db', term),
 
     /**
      * Obtiene hijos de un nodo
      */
-    getChildren: (parentId) => ipcRenderer.invoke('get-children', parentId),
+    getChildren: (parentId) => safeInvoke('get-children', parentId),
 
     /**
      * Obtiene ancestros de un nodo (para breadcrumb)
      */
-    getAncestors: (nodeId) => ipcRenderer.invoke('get-ancestors', nodeId),
+    getAncestors: (nodeId) => safeInvoke('get-ancestors', nodeId),
 
     /**
      * Obtiene información de un nodo específico
      */
-    getNodeInfo: (nodeId) => ipcRenderer.invoke('get-node-info', nodeId),
+    getNodeInfo: (nodeId) => safeInvoke('get-node-info', nodeId),
 
     /**
      * Obtiene la fecha de última actualización de la DB
      */
-    getDbUpdateDate: () => ipcRenderer.invoke('get-db-update-date'),
+    getDbUpdateDate: () => safeInvoke('get-db-update-date'),
 
     // =====================
     // DESCARGAS
@@ -105,22 +149,22 @@ const api = {
     /**
      * Inicia una descarga
      */
-    download: (file) => ipcRenderer.invoke('download-file', file),
+    download: (file) => safeInvoke('download-file', file),
 
     /**
      * Pausa una descarga (preserva archivos .part)
      */
-    pauseDownload: (downloadId) => ipcRenderer.invoke('pause-download', downloadId),
+    pauseDownload: (downloadId) => safeInvoke('pause-download', downloadId),
 
     /**
      * Cancela una descarga (elimina archivos)
      */
-    cancelDownload: (downloadId) => ipcRenderer.invoke('cancel-download', downloadId),
+    cancelDownload: (downloadId) => safeInvoke('cancel-download', downloadId),
 
     /**
      * Obtiene estadísticas de descargas
      */
-    getDownloadStats: () => ipcRenderer.invoke('get-download-stats'),
+    getDownloadStats: () => safeInvoke('get-download-stats'),
 
     // =====================
     // CONFIGURACIÓN
@@ -129,12 +173,12 @@ const api = {
     /**
      * Lee un archivo de configuración
      */
-    readConfigFile: (filename) => ipcRenderer.invoke('read-config-file', filename),
+    readConfigFile: (filename) => safeInvoke('read-config-file', filename),
 
     /**
      * Escribe un archivo de configuración
      */
-    writeConfigFile: (filename, data) => ipcRenderer.invoke('write-config-file', filename, data),
+    writeConfigFile: (filename, data) => safeInvoke('write-config-file', filename, data),
 
     // =====================
     // VENTANA
@@ -143,17 +187,17 @@ const api = {
     /**
      * Minimiza la ventana
      */
-    minimizeWindow: () => ipcRenderer.invoke('window-minimize'),
+    minimizeWindow: () => safeInvoke('window-minimize'),
 
     /**
      * Maximiza o restaura la ventana
      */
-    maximizeWindow: () => ipcRenderer.invoke('window-maximize'),
+    maximizeWindow: () => safeInvoke('window-maximize'),
 
     /**
      * Cierra la ventana
      */
-    closeWindow: () => ipcRenderer.invoke('window-close'),
+    closeWindow: () => safeInvoke('window-close'),
 
     // =====================
     // DIÁLOGOS
@@ -162,10 +206,12 @@ const api = {
     /**
      * Abre el cuadro de diálogo para seleccionar la carpeta
      */
-    selectFolder: () => ipcRenderer.invoke('select-folder')
+    selectFolder: () => safeInvoke('select-folder')
 };
 
 // Exponer API al renderer de forma segura
 contextBridge.exposeInMainWorld('api', api);
 
-console.log('[Preload] API expuesta correctamente');
+console.log('[Preload] ✅ API expuesta correctamente');
+console.log('[Preload] Canales de eventos:', validEventChannels.length);
+console.log('[Preload] Canales de invocación:', validInvokeChannels.length);
