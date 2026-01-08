@@ -107,43 +107,53 @@
           </td>
           <td class="download-actions">
             <!-- Botones según estado -->
-            <template v-if="download.state === 'waiting'">
-              <button @click="$emit('confirm-overwrite', download.id)" class="btn-action btn-confirm" title="Sobrescribir">
-                ✓
-              </button>
-              <button @click="$emit('cancel-overwrite', download.id)" class="btn-action btn-cancel" title="Cancelar">
-                ✗
-              </button>
-            </template>
-            <template v-else-if="download.queueStatus === 'downloading'">
-              <button @click="$emit('pause', download.id)" class="btn-action btn-pause" title="Pausar">
-                ⏸
-              </button>
-              <button @click="$emit('cancel', download.id)" class="btn-action btn-cancel" title="Cancelar">
-                ✗
-              </button>
-            </template>
-            <template v-else-if="download.queueStatus === 'paused'">
-              <button @click="$emit('resume', download.id)" class="btn-action btn-resume" title="Reanudar">
-                ▶
-              </button>
-              <button @click="$emit('cancel', download.id)" class="btn-action btn-cancel" title="Cancelar">
-                ✗
-              </button>
-            </template>
-            <template v-else-if="download.queueStatus === 'error'">
-              <button @click="$emit('retry', download.id)" class="btn-action btn-resume" title="Reintentar">
-                🔄
-              </button>
-            </template>
-            <template v-else-if="download.queueStatus === 'queued'">
-              <button @click="$emit('cancel', download.id)" class="btn-action btn-cancel" title="Cancelar">
-                ✗
-              </button>
-            </template>
-            <template v-else>
-              <span class="no-actions">-</span>
-            </template>
+            <div class="action-buttons-row">
+              <template v-if="download.state === 'waiting'">
+                <button @click="$emit('confirm-overwrite', download.id)" class="btn-action btn-confirm" title="Sobrescribir">
+                  ✓
+                </button>
+                <button @click="$emit('cancel-overwrite', download.id)" class="btn-action btn-cancel" title="Cancelar">
+                  ✗
+                </button>
+              </template>
+              <template v-else-if="download.queueStatus === 'downloading'">
+                <button @click="$emit('pause', download.id)" class="btn-action btn-pause" title="Pausar">
+                  ⏸
+                </button>
+                <button @click="$emit('cancel', download.id)" class="btn-action btn-cancel" title="Cancelar">
+                  ⏹
+                </button>
+              </template>
+              <template v-else-if="download.queueStatus === 'paused'">
+                <button @click="$emit('resume', download.id)" class="btn-action btn-resume" title="Reanudar">
+                  ▶
+                </button>
+                <button @click="$emit('cancel', download.id)" class="btn-action btn-cancel" title="Cancelar">
+                  ⏹
+                </button>
+              </template>
+              <template v-else-if="download.queueStatus === 'error'">
+                <button @click="$emit('retry', download.id)" class="btn-action btn-resume" title="Reintentar">
+                  🔄
+                </button>
+                <button @click="$emit('remove', download.id)" class="btn-action btn-delete" title="Eliminar de la lista">
+                  🗑️
+                </button>
+              </template>
+              <template v-else-if="download.queueStatus === 'queued'">
+                <button @click="$emit('cancel', download.id)" class="btn-action btn-cancel" title="Cancelar">
+                  ⏹
+                </button>
+              </template>
+              <template v-else-if="download.queueStatus === 'completed'">
+                <button @click="$emit('remove', download.id)" class="btn-action btn-delete" title="Eliminar de la lista">
+                  🗑️
+                </button>
+              </template>
+              <template v-else>
+                <span class="no-actions">-</span>
+              </template>
+            </div>
           </td>
         </tr>
       </tbody>
@@ -197,7 +207,8 @@ defineEmits([
   'pause',
   'resume',
   'cancel',
-  'retry'
+  'retry',
+  'remove' // Nuevo emit para eliminar
 ]);
 
 // Métodos
@@ -217,3 +228,82 @@ const getDirectoryPath = (fullPath) => {
 };
 </script>
 
+<style scoped>
+/* Layout horizontal para botones de acción */
+.action-buttons-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.btn-action {
+  min-width: 36px;
+  height: 36px;
+  padding: 4px 8px;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 16px;
+  transition: all 0.2s ease;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.btn-action:hover {
+  transform: scale(1.1);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+.btn-confirm {
+  background-color: #4caf50;
+  color: white;
+}
+
+.btn-confirm:hover {
+  background-color: #45a049;
+}
+
+.btn-pause {
+  background-color: #ff9800;
+  color: white;
+}
+
+.btn-pause:hover {
+  background-color: #e68900;
+}
+
+.btn-resume {
+  background-color: #2196f3;
+  color: white;
+}
+
+.btn-resume:hover {
+  background-color: #0b7dda;
+}
+
+.btn-cancel {
+  background-color: #f44336;
+  color: white;
+}
+
+.btn-cancel:hover {
+  background-color: #da190b;
+}
+
+.btn-delete {
+  background-color: #9e9e9e;
+  color: white;
+}
+
+.btn-delete:hover {
+  background-color: #757575;
+}
+
+.no-actions {
+  color: #999;
+  font-size: 14px;
+}
+</style>

@@ -5,10 +5,12 @@
  * - Término de búsqueda con debounce
  * - Resultados de búsqueda
  * - Ordenamiento de resultados
+ * 
+ * ✅ VERSIÓN 1: Para estructura src/services/api.js
  */
 
 import { ref, computed, watch } from 'vue';
-import { search as apiSearch } from '../services/api';
+import { search as apiSearch } from '../services/api';  // ✅ Ruta correcta para services/
 import { useSettings } from './useSettings';
 
 // Estado global (singleton)

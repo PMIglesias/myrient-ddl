@@ -1,6 +1,6 @@
 <template>
   <div id="container" :class="{ 'light-mode': !isDarkMode }">
-    <!-- Barra de Título -->
+    <!-- Barra de TÃ­tulo -->
     <TitleBar
       :is-at-root="isAtRoot"
       :location-path="locationPath"
@@ -13,7 +13,7 @@
       @open-settings="showSettings = true"
     />
 
-    <!-- Header con Búsqueda y Breadcrumb -->
+    <!-- Header con BÃºsqueda y Breadcrumb -->
     <SearchHeader
       :showing-favorites="showingFavorites"
       :showing-downloads="showingDownloads"
@@ -33,7 +33,7 @@
 
     <!-- Contenido Principal -->
     <div id="content-container">
-      <!-- Sección de Favoritos -->
+      <!-- SecciÃ³n de Favoritos -->
       <FavoritesSection
         v-if="showingFavorites"
         :folders="favoriteFolders"
@@ -61,9 +61,10 @@
         @resume="resumeDownload"
         @cancel="cancelDownload"
         @retry="retryDownload"
+        @remove="removeFromHistory"
       />
 
-      <!-- Contenido de navegación normal -->
+      <!-- Contenido de navegaciÃ³n normal -->
       <template v-else-if="searchResults.length === 0">
         <!-- Carpetas -->
         <FolderGrid
@@ -87,16 +88,16 @@
           @toggle-select-all="toggleSelectAllFiles"
         />
 
-        <!-- Estado vacío -->
+        <!-- Estado vacÃ­o -->
         <div v-if="folders.length === 0 && files.length === 0" class="empty-state">
-          <p>No hay carpetas ni archivos en esta ubicación.</p>
+          <p>No hay carpetas ni archivos en esta ubicaciÃ³n.</p>
         </div>
       </template>
 
-      <!-- Resultados de Búsqueda -->
+      <!-- Resultados de BÃºsqueda -->
       <template v-else>
         <div id="search-results">
-          <h2>Resultados de búsqueda</h2>
+          <h2>Resultados de bÃºsqueda</h2>
 
           <!-- Carpetas encontradas -->
           <FolderGrid
@@ -130,7 +131,7 @@
       </template>
     </div>
 
-    <!-- Modal de Configuración -->
+    <!-- Modal de ConfiguraciÃ³n -->
     <SettingsModal
       :show="showSettings"
       v-model:search-limit="searchLimit"
@@ -146,7 +147,7 @@
       @clear-favorites="clearFavorites"
     />
 
-    <!-- Notificaciones de Confirmación -->
+    <!-- Notificaciones de ConfirmaciÃ³n -->
     <ConfirmationToasts
       :confirmations="pendingConfirmations"
       @confirm="confirmOverwrite"
@@ -250,7 +251,7 @@ const {
   toggleFiltersPanel: toggleAdvancedFilters
 } = useFilters();
 
-// Selección de archivos de búsqueda (local)
+// SelecciÃ³n de archivos de bÃºsqueda (local)
 const selectedSearchFiles = ref([]);
 
 const toggleSearchFileSelection = (fileId) => {
@@ -293,6 +294,7 @@ const {
   toggleSelectHistoryDownload,
   toggleSelectAllHistoryDownloads,
   clearDownloads,
+  removeFromHistory,
   initDownloads,
   cleanup: cleanupDownloads
 } = useDownloads();
@@ -323,7 +325,7 @@ const formattedUpdateDate = computed(() => {
 });
 
 // =====================
-// MÉTODOS
+// MÃ‰TODOS
 // =====================
 
 const handleSearch = () => {
@@ -368,7 +370,7 @@ const loadUpdateDate = async () => {
       lastUpdateDate.value = result.data;
     }
   } catch (error) {
-    console.error('Error cargando fecha de actualización:', error);
+    console.error('Error cargando fecha de actualizaciÃ³n:', error);
   }
 };
 
@@ -376,7 +378,7 @@ const loadUpdateDate = async () => {
 // WATCHERS
 // =====================
 
-// Limpiar resultados de búsqueda al navegar
+// Limpiar resultados de bÃºsqueda al navegar
 watch(currentNodeId, () => {
   if (searchResults.value.length > 0) {
     clearSearch();

@@ -1,16 +1,15 @@
 /**
- * useDownloads - Composable para gestión de descargas
+ * useDownloads - Composable para gestiÃ³n de descargas
  * 
  * Maneja:
  * - Cola de descargas con prioridad
  * - Estados de descarga (queued, downloading, completed, etc.)
  * - Progreso y velocidad
  * - Confirmaciones de sobrescritura
- * - Reconciliación con el backend
+ * - ReconciliaciÃ³n con el backend
  * - Persistencia del historial
  * 
- * IMPORTANTE: Este composable maneja race conditions con un sistema
- * de locks y tracking de descargas "en tránsito"
+ * CORREGIDO: Race conditions con sistema de mutex
  */
 
 import { ref, computed } from 'vue';
@@ -30,10 +29,13 @@ const selectedDownloads = ref(new Set());
 const selectedHistoryDownloads = ref(new Set());
 const currentDownloadIndex = ref(0);
 
-// Control de race conditions
+// Control de race conditions - Sistema Mutex mejorado
 const startingDownloads = new Set();
-let queueProcessPromise = null;
-let queueProcessTimeout = null;
+
+// Mutex para procesamiento de cola (evita race conditions)
+let isQueueProcessing = false;    // Â¿EstÃ¡ procesando actualmente?
+let hasPendingWork = false;       // Â¿Hay trabajo pendiente mientras procesa?
+let queueDebounceTimeout = null;  // Timeout para agrupar llamadas rÃ¡pidas
 
 // Timeouts seguros
 const activeTimeouts = new Set();
@@ -75,10 +77,10 @@ export function useDownloads() {
     // COMPUTED
     // =====================
 
-    // Trigger para forzar recálculo solo cuando cambian estados (no progreso)
+    // Trigger para forzar recÃ¡lculo solo cuando cambian estados (no progreso)
     const downloadStateVersion = ref(0);
     
-    // Cache para evitar recálculos innecesarios
+    // Cache para evitar recÃ¡lculos innecesarios
     let cachedDownloadsList = [];
     let cachedStateSignature = '';
 
@@ -96,7 +98,7 @@ export function useDownloads() {
 
     /**
      * Mapea el estado de descarga a queueStatus
-     * Función pura para evitar recrearla en cada computed
+     * FunciÃ³n pura para evitar recrearla en cada computed
      */
     const getQueueStatus = (state) => {
         switch (state) {
@@ -168,7 +170,7 @@ export function useDownloads() {
     });
 
     /**
-     * Computed específicos por categoría (más eficientes para casos de uso específicos)
+     * Computed especÃ­ficos por categorÃ­a (mÃ¡s eficientes para casos de uso especÃ­ficos)
      */
     const activeDownloads = computed(() => {
         return Object.values(downloads.value).filter(
@@ -195,7 +197,7 @@ export function useDownloads() {
     });
 
     /**
-     * Contadores optimizados (evitan iteración completa)
+     * Contadores optimizados (evitan iteraciÃ³n completa)
      */
     const downloadCounts = computed(() => ({
         active: activeDownloads.value.length,
@@ -234,7 +236,7 @@ export function useDownloads() {
                 Object.values(downloads.value).forEach(dl => {
                     if (dl.state === 'progressing' || dl.state === 'starting') {
                         dl.state = 'interrupted';
-                        dl.error = 'Descarga interrumpida al cerrar la aplicación';
+                        dl.error = 'Descarga interrumpida al cerrar la aplicaciÃ³n';
                     }
                 });
                 await saveDownloadHistory();
@@ -300,24 +302,80 @@ export function useDownloads() {
         processDownloadQueue();
     };
 
+    /**
+     * Procesa la cola de descargas de forma segura con mutex.
+     * 
+     * Garantiza que:
+     * 1. Solo una instancia procesa a la vez
+     * 2. Las llamadas durante el procesamiento se acumulan
+     * 3. Se procesan automÃ¡ticamente al terminar
+     */
     const processDownloadQueue = () => {
-        if (queueProcessTimeout) safeClearTimeout(queueProcessTimeout);
+        // Si ya estamos procesando, solo marcar que hay trabajo pendiente
+        if (isQueueProcessing) {
+            hasPendingWork = true;
+            console.debug('[Queue] Proceso en curso, trabajo pendiente marcado');
+            return;
+        }
 
-        queueProcessTimeout = safeSetTimeout(async () => {
-            if (queueProcessPromise) await queueProcessPromise;
+        // Debounce: Agrupar llamadas rÃ¡pidas consecutivas
+        if (queueDebounceTimeout) {
+            safeClearTimeout(queueDebounceTimeout);
+        }
 
-            queueProcessPromise = executeQueueProcessing();
-            await queueProcessPromise;
-            queueProcessPromise = null;
-
-            if (downloadQueue.value.some(d => d.status === 'queued')) {
-                safeSetTimeout(() => processDownloadQueue(), 50);
-            }
+        queueDebounceTimeout = safeSetTimeout(async () => {
+            queueDebounceTimeout = null;
+            await _executeQueueWithMutex();
         }, 100);
     };
 
+    /**
+     * Ejecuta el procesamiento con mutex (uso interno).
+     * NO llamar directamente, usar processDownloadQueue().
+     */
+    const _executeQueueWithMutex = async () => {
+        // Double-check: Si ya estÃ¡ procesando, marcar pendiente
+        if (isQueueProcessing) {
+            hasPendingWork = true;
+            return;
+        }
+
+        // Adquirir el "lock"
+        isQueueProcessing = true;
+        hasPendingWork = false;
+
+        try {
+            // Verificar que el componente sigue montado
+            if (!isMounted) {
+                console.debug('[Queue] Componente desmontado, abortando');
+                return;
+            }
+
+            // Ejecutar el procesamiento real
+            await executeQueueProcessing();
+
+        } catch (error) {
+            console.error('[Queue] Error en procesamiento:', error);
+        } finally {
+            // Liberar el "lock"
+            isQueueProcessing = false;
+
+            // Si quedÃ³ trabajo pendiente, procesar
+            if (hasPendingWork && isMounted) {
+                hasPendingWork = false;
+                console.debug('[Queue] Procesando trabajo pendiente');
+                safeSetTimeout(() => _executeQueueWithMutex(), 50);
+            }
+        }
+    };
+
+    /**
+     * Ejecuta el procesamiento real de la cola.
+     * Inicia descargas segÃºn los slots disponibles.
+     */
     const executeQueueProcessing = async () => {
         try {
+            // Calcular descargas activas
             const activeCount = Object.values(downloads.value).filter(
                 d => d.state === 'starting' || d.state === 'progressing'
             ).length;
@@ -325,19 +383,43 @@ export function useDownloads() {
             const totalActive = activeCount + startingDownloads.size;
             const availableSlots = maxParallelDownloads.value - totalActive;
 
-            if (availableSlots <= 0) return;
+            // Log para debugging
+            console.debug(`[Queue] Slots: ${availableSlots} libres (${totalActive}/${maxParallelDownloads.value} activas)`);
 
+            if (availableSlots <= 0) {
+                console.debug('[Queue] Sin slots disponibles');
+                return;
+            }
+
+            // Obtener descargas pendientes (no en trÃ¡nsito)
             const queued = downloadQueue.value.filter(
                 d => d.status === 'queued' && !startingDownloads.has(d.id)
             );
 
             const toStart = queued.slice(0, availableSlots);
-            if (toStart.length === 0) return;
 
+            if (toStart.length === 0) {
+                console.debug('[Queue] No hay descargas pendientes');
+                return;
+            }
+
+            console.debug(`[Queue] Iniciando ${toStart.length} descarga(s)`);
+
+            // Procesar cada descarga
             for (const item of toStart) {
-                if (!isMounted) break;
-                if (startingDownloads.has(item.id)) continue;
+                // VerificaciÃ³n de seguridad: componente montado
+                if (!isMounted) {
+                    console.debug('[Queue] Componente desmontado, deteniendo');
+                    break;
+                }
 
+                // VerificaciÃ³n de seguridad: no duplicar
+                if (startingDownloads.has(item.id)) {
+                    console.debug(`[Queue] ${item.id} ya iniciÃ¡ndose, omitiendo`);
+                    continue;
+                }
+
+                // Marcar como "en trÃ¡nsito" (evita duplicados)
                 startingDownloads.add(item.id);
                 item.status = 'downloading';
 
@@ -350,24 +432,46 @@ export function useDownloads() {
                         forceOverwrite: item.forceOverwrite || false
                     });
 
-                    if (!result.success && !result.queued) {
+                    // Manejar diferentes respuestas del backend
+                    if (result.success) {
+                        if (result.awaiting) {
+                            // Archivo existe, esperando confirmaciÃ³n del usuario
+                            console.debug(`[Queue] Esperando confirmaciÃ³n: "${item.title}"`);
+                            item.status = 'awaiting';
+                        } else if (result.queued) {
+                            // Agregado a cola del backend
+                            console.debug(`[Queue] En cola backend: "${item.title}"`);
+                        } else {
+                            // Descarga iniciada correctamente
+                            console.debug(`[Queue] Iniciada: "${item.title}"`);
+                        }
+                    } else if (!result.queued) {
+                        // Error real al iniciar
+                        console.warn(`[Queue] Error iniciando "${item.title}":`, result.error);
                         item.status = 'queued';
+
                         if (downloads.value[item.id]) {
                             downloads.value[item.id].state = 'interrupted';
-                            downloads.value[item.id].error = result.error || 'Error al iniciar';
+                            downloads.value[item.id].error = result.error || 'Error al iniciar descarga';
                         }
                     }
+
                 } catch (error) {
-                    console.error(`[Queue] Error en ${item.id}:`, error);
+                    console.error(`[Queue] ExcepciÃ³n en ${item.id}:`, error);
                     item.status = 'queued';
                 } finally {
-                    safeSetTimeout(() => startingDownloads.delete(item.id), 500);
+                    // Liberar ID despuÃ©s de delay (da tiempo al evento de progreso)
+                    safeSetTimeout(() => {
+                        startingDownloads.delete(item.id);
+                    }, 500);
                 }
 
+                // Pausa entre descargas para no saturar
                 await new Promise(resolve => safeSetTimeout(resolve, 50));
             }
+
         } catch (error) {
-            console.error('[Queue] Error:', error);
+            console.error('[Queue] Error general en procesamiento:', error);
         }
     };
 
@@ -458,8 +562,16 @@ export function useDownloads() {
         }
 
         if (downloads.value[downloadId]) {
-            downloads.value[downloadId].state = 'queued';
-            delete downloads.value[downloadId].error;
+            // ✅ CORREGIDO: Resetear completamente la descarga
+            const dl = downloads.value[downloadId];
+            dl.state = 'queued';
+            dl.percent = 0;
+            dl.downloadedBytes = 0;
+            delete dl.error;
+            delete dl.speed;
+            delete dl.eta;
+            
+            console.log(`[confirmOverwrite] Descarga ${downloadId} reiniciada para sobrescritura`);
         }
 
         processDownloadQueue();
@@ -510,7 +622,7 @@ export function useDownloads() {
     };
 
     // =====================
-    // SELECCIÓN
+    // SELECCIÃ“N
     // =====================
 
     const toggleSelectDownload = (id) => {
@@ -546,7 +658,7 @@ export function useDownloads() {
     const getDownloadButtonText = (id) => {
         const dl = downloads.value[id];
         if (dl) {
-            if (dl.state === 'completed') return '¡Listo!';
+            if (dl.state === 'completed') return 'Â¡Listo!';
             if (dl.state === 'progressing') return 'Bajando...';
             if (dl.state === 'interrupted') return 'Reintentar';
         }
@@ -648,10 +760,10 @@ export function useDownloads() {
     };
 
     // =====================
-    // RECONCILIACIÓN OPTIMIZADA
+    // RECONCILIACIÃ“N OPTIMIZADA
     // =====================
 
-    // Estado para optimización
+    // Estado para optimizaciÃ³n
     let lastReconcileState = null;
     let reconcileIntervalMs = 5000; // Intervalo base
     const RECONCILE_ACTIVE_INTERVAL = 5000;   // 5s cuando hay actividad
@@ -668,7 +780,7 @@ export function useDownloads() {
     };
 
     /**
-     * Reconciliación optimizada con el backend
+     * ReconciliaciÃ³n optimizada con el backend
      * Solo se ejecuta cuando es necesario
      */
     const reconcileWithBackend = async () => {
@@ -677,7 +789,7 @@ export function useDownloads() {
                               downloadQueue.value.some(d => d.status === 'queued');
         
         if (!hasActiveWork) {
-            // Limpiar speedStats huérfanas sin llamar al backend
+            // Limpiar speedStats huÃ©rfanas sin llamar al backend
             if (speedStats.value.size > 0) {
                 speedStats.value.clear();
                 console.debug('[Reconcile] Limpiadas speedStats (sin descargas activas)');
@@ -685,7 +797,7 @@ export function useDownloads() {
             return;
         }
 
-        // Skip 2: Estado no ha cambiado desde última reconciliación
+        // Skip 2: Estado no ha cambiado desde Ãºltima reconciliaciÃ³n
         const currentHash = getStateHash();
         if (currentHash === lastReconcileState) {
             console.debug('[Reconcile] Skip - estado sin cambios');
@@ -708,14 +820,14 @@ export function useDownloads() {
                     !startingDownloads.has(dl.id)) {
                     
                     dl.state = 'interrupted';
-                    dl.error = 'Conexión perdida';
+                    dl.error = 'ConexiÃ³n perdida';
                     speedStats.value.delete(dl.id);
                     changes++;
                     console.warn(`[Reconcile] Descarga ${dl.id} perdida en backend`);
                 }
             }
 
-            // Limpiar speedStats huérfanas
+            // Limpiar speedStats huÃ©rfanas
             speedStats.value.forEach((_, id) => {
                 const dl = downloads.value[id];
                 if (!dl || !['progressing', 'starting'].includes(dl.state)) {
@@ -724,7 +836,7 @@ export function useDownloads() {
                 }
             });
 
-            // Actualizar estado para próxima comparación
+            // Actualizar estado para prÃ³xima comparaciÃ³n
             lastReconcileState = getStateHash();
 
             if (changes > 0) {
@@ -738,7 +850,7 @@ export function useDownloads() {
     };
 
     /**
-     * Ajusta el intervalo de reconciliación según la actividad
+     * Ajusta el intervalo de reconciliaciÃ³n segÃºn la actividad
      */
     const adjustReconcileInterval = () => {
         const hasActiveWork = activeDownloads.value.length > 0;
@@ -772,7 +884,7 @@ export function useDownloads() {
             }
         }, 5000);
 
-        // Iniciar reconciliación con intervalo adaptativo
+        // Iniciar reconciliaciÃ³n con intervalo adaptativo
         reconciliationInterval = setInterval(async () => {
             if (!isMounted) return;
             adjustReconcileInterval();
@@ -785,6 +897,7 @@ export function useDownloads() {
     const cleanup = () => {
         isMounted = false;
 
+        // Limpiar intervalos
         if (rotationInterval) {
             clearInterval(rotationInterval);
             rotationInterval = null;
@@ -795,21 +908,31 @@ export function useDownloads() {
             reconciliationInterval = null;
         }
 
+        // Remover listener de progreso
         if (removeProgressListener) {
             removeProgressListener();
             removeProgressListener = null;
         }
 
-        // Resetear estado de reconciliación
+        // Resetear estado de reconciliaciÃ³n
         lastReconcileState = null;
         reconcileIntervalMs = RECONCILE_ACTIVE_INTERVAL;
 
+        // Limpiar sistema de mutex
+        if (queueDebounceTimeout) {
+            safeClearTimeout(queueDebounceTimeout);
+            queueDebounceTimeout = null;
+        }
+        isQueueProcessing = false;
+        hasPendingWork = false;
+
+        // Limpiar todos los timeouts activos
         clearAllTimeouts();
-        safeClearTimeout(queueProcessTimeout);
-        queueProcessTimeout = null;
-        queueProcessPromise = null;
+
+        // Limpiar tracking de descargas en trÃ¡nsito
         startingDownloads.clear();
 
+        // Guardar historial antes de salir
         saveDownloadHistory();
     };
 
@@ -831,13 +954,13 @@ export function useDownloads() {
         // Computed - Lista principal
         allDownloads,
         
-        // Computed - Por categoría (optimizados)
+        // Computed - Por categorÃ­a (optimizados)
         activeDownloads,
         queuedDownloads,
         completedDownloads,
         failedDownloads,
         
-        // Computed - Contadores y estadísticas
+        // Computed - Contadores y estadÃ­sticas
         downloadCounts,
         activeDownloadCount,
         averageDownloadSpeed,
@@ -860,7 +983,7 @@ export function useDownloads() {
         clearDownloads,
         removeFromHistory,
 
-        // Selección
+        // SelecciÃ³n
         toggleSelectDownload,
         toggleSelectHistoryDownload,
         toggleSelectAllHistoryDownloads,

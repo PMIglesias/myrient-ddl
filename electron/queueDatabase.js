@@ -803,21 +803,32 @@ class QueueDatabase {
         return this.setState(id, DownloadState.QUEUED, { resumed: true });
     }
 
-    /**
+   /**
      * Marca una descarga como completada
      * @param {number} id - ID de la descarga
-     * @param {Object} [info] - Info adicional (hash, etc.)
+     * @param {Object} [info] - Info adicional (savePath, etc.)
      * @returns {boolean}
      */
     completeDownload(id, info = {}) {
         const now = Date.now();
 
         try {
+            // Obtener datos actuales para preservar bytes
+            const download = this.getById(id);
+            
+            // IMPORTANTE: El prepared statement requiere TODOS los parámetros
             this.statements.updateDownload.run({
                 id,
                 state: DownloadState.COMPLETED,
                 progress: 1.0,
+                downloadedBytes: download?.downloaded_bytes || download?.total_bytes || null,
+                totalBytes: download?.total_bytes || null,
+                savePath: info.savePath || download?.save_path || null,
+                url: null,
+                startedAt: null,
                 completedAt: now,
+                retryCount: null,
+                lastError: null,
                 updatedAt: now
             });
 

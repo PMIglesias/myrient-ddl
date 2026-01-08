@@ -173,16 +173,31 @@ function registerHandlers(mainWindow) {
         // Iniciar descarga
         await downloadManager.startDownload(validatedParams);
 
-        // Verificar que se inició correctamente la descarga
+        // Pequeña espera para que el estado se actualice
         await new Promise(resolve => setTimeout(resolve, 100));
 
-        if (downloadManager.hasActiveDownload(validatedParams.id)) {
+        // Verificar estado de la descarga (puede ser activa, awaiting, o queued)
+        const isActive = downloadManager.hasActiveDownload(validatedParams.id);
+        const dbDownload = queueDatabase.getById(validatedParams.id);
+        const downloadState = dbDownload?.state;
+
+        if (isActive || downloadState === 'downloading') {
             log.info(`Descarga iniciada: ${validatedParams.title}`);
             return { success: true, queued: false, started: true };
+        } else if (downloadState === 'awaiting') {
+            log.info(`Descarga esperando confirmación: ${validatedParams.title}`);
+            return { success: true, awaiting: true };
+        } else if (downloadState === 'queued') {
+            log.info(`Descarga en cola: ${validatedParams.title}`);
+            return { success: true, queued: true };
+        } else if (downloadState === 'completed') {
+            log.info(`Descarga ya completada: ${validatedParams.title}`);
+            return { success: true, completed: true };
         } else {
-            log.warn(`Descarga no se inició correctamente: ${validatedParams.title}`);
+            log.warn(`Descarga no se inició correctamente: ${validatedParams.title} (estado: ${downloadState})`);
             return { success: false, error: 'No se pudo iniciar la descarga' };
         }
+
     }));
 
     ipcMain.handle('pause-download', createHandler('pause-download', async (event, downloadId) => {
