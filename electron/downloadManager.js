@@ -304,7 +304,15 @@ class DownloadManager {
                 processedCount++;
 
                 // Iniciar descarga (async, no bloqueante)
-                this.startDownload(nextDownload).catch(error => {
+                // Pasar savePath si está disponible para evitar pedir nueva ubicación
+                this.startDownload({
+                    id: nextDownload.id,
+                    title: nextDownload.title,
+                    downloadPath: nextDownload.downloadPath,
+                    preserveStructure: nextDownload.preserveStructure,
+                    forceOverwrite: nextDownload.forceOverwrite,
+                    savePath: nextDownload.savePath || null
+                }).catch(error => {
                     this._handleDownloadError(nextDownload, error);
                 });
             }
@@ -367,7 +375,7 @@ class DownloadManager {
      * Inicia una descarga
      * Decide automáticamente si usar descarga simple o fragmentada
      */
-    async startDownload({ id, title, downloadPath, preserveStructure, forceOverwrite }) {
+    async startDownload({ id, title, downloadPath, preserveStructure, forceOverwrite, savePath: providedSavePath }) {
         if (!id || !title) {
             log.error('startDownload: Parámetros inválidos', { id, title });
             return;
@@ -415,9 +423,22 @@ class DownloadManager {
             log.info('Tamaño esperado:', expectedFileSize, 'bytes');
 
             // Determinar ruta de guardado
-            const savePath = await this._determineSavePath({
-                id, title, downloadPath, preserveStructure
-            });
+            // Si se proporciona un savePath (por ejemplo, al reanudar), usarlo directamente
+            let savePath = providedSavePath;
+            
+            if (!savePath) {
+                // Si no hay savePath proporcionado, intentar obtenerlo de la base de datos
+                const dbDownload = queueDatabase.getById(id);
+                if (dbDownload && dbDownload.savePath) {
+                    savePath = dbDownload.savePath;
+                    log.info(`Usando savePath guardado: ${savePath}`);
+                } else {
+                    // Si no hay savePath guardado, determinar uno nuevo
+                    savePath = await this._determineSavePath({
+                        id, title, downloadPath, preserveStructure
+                    });
+                }
+            }
 
             if (!savePath) {
                 this.deleteActiveDownload(id);

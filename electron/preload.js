@@ -16,7 +16,9 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 // Canales IPC permitidos para eventos (one-way, main -> renderer)
 const validEventChannels = [
-    'download-progress'
+    'download-progress',
+    'history-cleaned',
+    'downloads-restored'
 ];
 
 // Canales IPC permitidos para invocaciones (two-way, renderer <-> main)
@@ -29,9 +31,12 @@ const validInvokeChannels = [
     'get-db-update-date',
     // Descargas
     'download-file',
-    'pause-download',  
+    'download-folder',
+    'pause-download',
+    'resume-download',
     'cancel-download',
     'get-download-stats',
+    'clean-history',
     // Configuración
     'read-config-file',
     'write-config-file',
@@ -152,9 +157,19 @@ const api = {
     download: (file) => safeInvoke('download-file', file),
 
     /**
+     * Descarga todos los archivos de una carpeta recursivamente
+     */
+    downloadFolder: (params) => safeInvoke('download-folder', params),
+
+    /**
      * Pausa una descarga (preserva archivos .part)
      */
     pauseDownload: (downloadId) => safeInvoke('pause-download', downloadId),
+
+    /**
+     * Reanuda una descarga pausada
+     */
+    resumeDownload: (downloadId) => safeInvoke('resume-download', downloadId),
 
     /**
      * Cancela una descarga (elimina archivos)
@@ -165,6 +180,11 @@ const api = {
      * Obtiene estadísticas de descargas
      */
     getDownloadStats: () => safeInvoke('get-download-stats'),
+
+    /**
+     * Limpia el historial de descargas
+     */
+    cleanHistory: (daysOld) => safeInvoke('clean-history', daysOld),
 
     // =====================
     // CONFIGURACIÓN

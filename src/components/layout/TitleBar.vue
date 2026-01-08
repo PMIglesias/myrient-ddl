@@ -6,6 +6,7 @@
         @click="$emit('go-back')" 
         class="back-btn" 
         title="Volver"
+        aria-label="Volver a la carpeta anterior"
       >
         &lt;
       </button>
@@ -32,6 +33,8 @@
         @click="$emit('toggle-theme')" 
         class="titlebar-btn theme-btn" 
         :title="isDarkMode ? 'Modo Claro' : 'Modo Oscuro'"
+        :aria-label="isDarkMode ? 'Cambiar a modo claro' : 'Cambiar a modo oscuro'"
+        :aria-pressed="isDarkMode"
       >
         {{ isDarkMode ? '☀️' : '🌙' }}
       </button>
@@ -40,6 +43,7 @@
         @click="$emit('open-settings')" 
         class="titlebar-btn settings-btn" 
         title="Configuración"
+        aria-label="Abrir panel de configuración"
       >
         ⚙️
       </button>

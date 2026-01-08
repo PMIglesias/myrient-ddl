@@ -16,6 +16,9 @@ export { default as FileTable } from './files/FileTable.vue';
 export { default as DownloadsPanel } from './downloads/DownloadsPanel.vue';
 export { default as ConfirmationToasts } from './downloads/ConfirmationToasts.vue';
 
+// Notifications
+export { default as ToastNotifications } from './ToastNotifications.vue';
+
 // Modals
 export { default as SettingsModal } from './modals/SettingsModal.vue';
 

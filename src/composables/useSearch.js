@@ -23,6 +23,12 @@ const sortDirection = ref('asc');
 // Timeout para debounce
 let searchTimeout = null;
 
+// Flag para evitar múltiples watchers
+let watcherInitialized = false;
+
+// Referencia a la función executeSearch para el watcher
+let executeSearchRef = null;
+
 /**
  * Composable de búsqueda
  */
@@ -101,7 +107,7 @@ export function useSearch() {
             const response = await apiSearch(term);
             
             if (response.success) {
-                // Limitar resultados según configuración
+                // Limitar resultados según configuración (usar searchLimit del closure)
                 searchResults.value = response.data.slice(0, searchLimit.value);
                 console.log(`[useSearch] Encontrados: ${response.data.length}, mostrando: ${searchResults.value.length}`);
             } else {
@@ -116,6 +122,9 @@ export function useSearch() {
         }
     };
 
+    // Guardar referencia para el watcher
+    executeSearchRef = executeSearch;
+
     /**
      * Búsqueda con debounce (para input en tiempo real)
      * @param {number} delay - Delay en ms (default: 300)
@@ -126,7 +135,9 @@ export function useSearch() {
         }
 
         searchTimeout = setTimeout(() => {
-            executeSearch();
+            if (executeSearchRef) {
+                executeSearchRef();
+            }
             searchTimeout = null;
         }, delay);
     };
@@ -183,6 +194,27 @@ export function useSearch() {
         if (sortField.value !== field) return '';
         return sortDirection.value === 'asc' ? '↑' : '↓';
     };
+
+    // =====================
+    // WATCHERS
+    // =====================
+
+    // Inicializar watcher solo una vez (después de que executeSearchRef esté definido)
+    if (!watcherInitialized && executeSearchRef) {
+        watch(searchTerm, (newTerm) => {
+            if (newTerm.trim().length >= 3) {
+                searchWithDebounce(300);
+            } else {
+                // Si el término es muy corto, limpiar resultados
+                if (searchTimeout) {
+                    clearTimeout(searchTimeout);
+                    searchTimeout = null;
+                }
+                searchResults.value = [];
+            }
+        });
+        watcherInitialized = true;
+    }
 
     // =====================
     // CLEANUP

@@ -95,6 +95,19 @@
           </label>
           <span class="setting-hint">Muestra alertas cuando el archivo ya existe</span>
         </div>
+
+        <div class="setting-item">
+          <label class="checkbox-label">
+            <input 
+              type="checkbox" 
+              :checked="autoResumeDownloads"
+              @change="$emit('update:autoResumeDownloads', $event.target.checked)"
+              class="checkbox-input"
+            />
+            Reanudar descargas automáticamente al iniciar
+          </label>
+          <span class="setting-hint">Si está desactivado, las descargas en cola quedarán pausadas al reiniciar</span>
+        </div>
       </div>
 
       <!-- Sección Almacenamiento -->
@@ -107,6 +120,80 @@
               🗑️ Limpiar todos los favoritos
             </button>
             <span class="setting-hint">{{ favoritesCount }} favorito(s) guardado(s)</span>
+          </div>
+        </div>
+
+        <div class="setting-item">
+          <label>Historial de descargas</label>
+          <div class="setting-control">
+            <div class="history-controls">
+              <button @click="$emit('clean-history', 30)" class="clean-history-btn" title="Eliminar registros de más de 30 días">
+                🧹 Limpiar historial (30 días)
+              </button>
+              <button @click="$emit('clean-history', 7)" class="clean-history-btn small" title="Eliminar registros de más de 7 días">
+                7 días
+              </button>
+            </div>
+            <span class="setting-hint">Elimina registros antiguos de la base de datos para liberar espacio</span>
+            <div v-if="cleanupStats" class="cleanup-stats">
+              <span v-if="cleanupStats.lastDbCleanup" class="stat-item">
+                Última limpieza BD: {{ formatDate(cleanupStats.lastDbCleanup) }}
+              </span>
+              <span v-if="cleanupStats.lastMemoryCleanup" class="stat-item">
+                Última limpieza memoria: {{ formatDate(cleanupStats.lastMemoryCleanup) }}
+              </span>
+              <span v-if="cleanupStats.totalRemoved > 0" class="stat-item">
+                Total removidas: {{ cleanupStats.totalRemoved }}
+              </span>
+            </div>
+          </div>
+        </div>
+        
+        <div class="setting-item">
+          <label>Límites de historial en memoria</label>
+          <div class="setting-control">
+            <div class="memory-limits-group">
+              <div class="memory-limit-item">
+                <label class="memory-limit-label">Máximo total:</label>
+                <input 
+                  type="number" 
+                  :value="maxHistoryInMemory"
+                  @input="$emit('update:maxHistoryInMemory', Number($event.target.value))"
+                  @blur="$emit('save-settings')"
+                  min="50" 
+                  max="500" 
+                  step="25"
+                  class="number-input small"
+                />
+              </div>
+              <div class="memory-limit-item">
+                <label class="memory-limit-label">Completadas:</label>
+                <input 
+                  type="number" 
+                  :value="maxCompletedInMemory"
+                  @input="$emit('update:maxCompletedInMemory', Number($event.target.value))"
+                  @blur="$emit('save-settings')"
+                  min="10" 
+                  max="200" 
+                  step="10"
+                  class="number-input small"
+                />
+              </div>
+              <div class="memory-limit-item">
+                <label class="memory-limit-label">Fallidas:</label>
+                <input 
+                  type="number" 
+                  :value="maxFailedInMemory"
+                  @input="$emit('update:maxFailedInMemory', Number($event.target.value))"
+                  @blur="$emit('save-settings')"
+                  min="5" 
+                  max="100" 
+                  step="5"
+                  class="number-input small"
+                />
+              </div>
+            </div>
+            <span class="setting-hint">Controla cuántas descargas se mantienen en memoria para mejorar el rendimiento</span>
           </div>
         </div>
       </div>
@@ -158,6 +245,22 @@ defineProps({
     type: Boolean,
     default: true
   },
+  autoResumeDownloads: {
+    type: Boolean,
+    default: true
+  },
+  maxHistoryInMemory: {
+    type: Number,
+    default: 100
+  },
+  maxCompletedInMemory: {
+    type: Number,
+    default: 50
+  },
+  maxFailedInMemory: {
+    type: Number,
+    default: 20
+  },
   favoritesCount: {
     type: Number,
     default: 0
@@ -165,6 +268,10 @@ defineProps({
   lastUpdateDate: {
     type: String,
     default: ''
+  },
+  cleanupStats: {
+    type: Object,
+    default: null
   }
 });
 
@@ -176,10 +283,25 @@ defineEmits([
   'update:preserveStructure',
   'update:maxParallelDownloads',
   'update:showNotifications',
+  'update:autoResumeDownloads',
+  'update:maxHistoryInMemory',
+  'update:maxCompletedInMemory',
+  'update:maxFailedInMemory',
   'save-settings',
   'select-folder',
-  'clear-favorites'
+  'clear-favorites',
+  'clean-history'
 ]);
+
+// Métodos
+const formatDate = (timestamp) => {
+  if (!timestamp) return '-';
+  try {
+    return new Date(timestamp).toLocaleString();
+  } catch {
+    return '-';
+  }
+};
 </script>
 
 <!-- Sin estilos - usa style.css global -->

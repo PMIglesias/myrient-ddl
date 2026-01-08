@@ -526,19 +526,21 @@ class QueueDatabase {
             return false;
         }
 
+        const now = Date.now();
+
         try {
             this.statements.updateDownload.run({
                 id,
-                state: DownloadState.DOWNLOADING,
-                progress: null,
-                downloadedBytes: info.downloadedBytes || null,
-                url: info.url || null,
-                savePath: info.savePath || null,
-                totalBytes: info.totalBytes || null,
-                startedAt: now,
-                completedAt: null,
-                retryCount: null,
-                lastError: null,
+                state: updates.state || null,
+                progress: updates.progress ?? null,
+                downloadedBytes: updates.downloadedBytes ?? null,
+                url: updates.url || null,
+                savePath: updates.savePath || null,
+                totalBytes: updates.totalBytes ?? null,
+                startedAt: updates.startedAt || null,
+                completedAt: updates.completedAt || null,
+                retryCount: updates.retryCount ?? null,
+                lastError: updates.lastError || null,
                 updatedAt: now
             });
 
@@ -753,14 +755,14 @@ class QueueDatabase {
         try {
             this.statements.updateDownload.run({
                 id,
-                state: DownloadState.COMPLETED,
-                progress: 1.0,
-                downloadedBytes: null,
-                totalBytes: null,
-                savePath: null,
-                url: null,
-                startedAt: null,
-                completedAt: now,
+                state: DownloadState.DOWNLOADING,
+                progress: info.progress || 0,
+                downloadedBytes: info.downloadedBytes || 0,
+                totalBytes: info.totalBytes || null,
+                savePath: info.savePath || null,
+                url: info.url || null,
+                startedAt: now,
+                completedAt: null,
                 retryCount: null,
                 lastError: null,
                 updatedAt: now

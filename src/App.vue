@@ -51,12 +51,15 @@
         :selected-history-downloads="selectedHistoryDownloads"
         :show-empty="true"
         @clear-downloads="clearDownloads"
+        @cancel-all-downloads="cancelAllDownloads"
         @confirm-all="confirmOverwriteAll"
         @cancel-all="cancelOverwriteAll"
         @toggle-select-all-history="toggleSelectAllHistoryDownloads"
         @toggle-select-history="toggleSelectHistoryDownload"
         @confirm-overwrite="confirmOverwrite"
         @cancel-overwrite="cancelOverwrite"
+        @pause-all="pauseAllDownloads"
+        @resume-all="resumeAllDownloads"
         @pause="pauseDownload"
         @resume="resumeDownload"
         @cancel="cancelDownload"
@@ -82,15 +85,20 @@
           :files="files"
           :selected-files="selectedFiles"
           :downloads="downloads"
+          :current-folder-id="currentNodeId"
+          :is-at-root="isAtRoot"
           @download="download"
           @download-selected="downloadSelectedFiles"
+          @download-folder="downloadCurrentFolder"
           @toggle-select="toggleFileSelection"
           @toggle-select-all="toggleSelectAllFiles"
         />
 
         <!-- Estado vacÃ­o -->
         <div v-if="folders.length === 0 && files.length === 0" class="empty-state">
-          <p>No hay carpetas ni archivos en esta ubicaciÃ³n.</p>
+          <div class="empty-state-icon">📂</div>
+          <h3>Ubicación vacía</h3>
+          <p>No hay carpetas ni archivos en esta ubicación. Navega por las carpetas para encontrar contenido.</p>
         </div>
       </template>
 
@@ -139,12 +147,18 @@
       v-model:preserve-structure="preserveStructure"
       v-model:max-parallel-downloads="maxParallelDownloads"
       v-model:show-notifications="showNotifications"
+      v-model:auto-resume-downloads="autoResumeDownloads"
+      v-model:max-history-in-memory="maxHistoryInMemory"
+      v-model:max-completed-in-memory="maxCompletedInMemory"
+      v-model:max-failed-in-memory="maxFailedInMemory"
       :favorites-count="favorites.length"
       :last-update-date="formattedUpdateDate"
+      :cleanup-stats="cleanupStats"
       @close="showSettings = false"
       @save-settings="saveDownloadSettings"
       @select-folder="selectDownloadFolder"
       @clear-favorites="clearFavorites"
+      @clean-history="handleCleanHistory"
     />
 
     <!-- Notificaciones de ConfirmaciÃ³n -->
@@ -168,7 +182,8 @@ import {
   DownloadsPanel,
   ConfirmationToasts,
   SettingsModal,
-  FavoritesSection
+  FavoritesSection,
+  ToastNotifications
 } from './components';
 
 // Composables
@@ -178,9 +193,10 @@ import { useNavigation } from './composables/useNavigation';
 import { useSearch } from './composables/useSearch';
 import { useFilters } from './composables/useFilters';
 import { useDownloads } from './composables/useDownloads';
+import { useToasts } from './composables/useToasts';
 
 // API
-import { getDbUpdateDate } from './services/api';
+import { getDbUpdateDate, cleanHistory } from './services/api';
 
 // =====================
 // COMPOSABLES
@@ -193,6 +209,10 @@ const {
   maxParallelDownloads,
   searchLimit,
   isDarkMode,
+  autoResumeDownloads,
+  maxHistoryInMemory,
+  maxCompletedInMemory,
+  maxFailedInMemory,
   initSettings,
   saveDownloadSettings,
   selectDownloadFolder,
@@ -283,8 +303,11 @@ const {
   averageDownloadSpeed,
   currentDownloadName,
   download,
+  downloadFolder,
   pauseDownload,
   resumeDownload,
+  pauseAllDownloads,
+  resumeAllDownloads,
   cancelDownload,
   retryDownload,
   confirmOverwrite,
@@ -294,6 +317,7 @@ const {
   toggleSelectHistoryDownload,
   toggleSelectAllHistoryDownloads,
   clearDownloads,
+  cancelAllDownloads,
   removeFromHistory,
   initDownloads,
   cleanup: cleanupDownloads
@@ -315,6 +339,17 @@ const showSettings = ref(false);
 const selectedFiles = ref([]);
 const lastUpdateDate = ref(null);
 
+// Toasts
+const { toasts, showToast, removeToast } = useToasts();
+
+// Estadísticas de limpieza
+const cleanupStats = ref({
+  lastMemoryCleanup: null,
+  lastDbCleanup: null,
+  totalRemoved: 0,
+  totalKept: 0
+});
+
 // =====================
 // COMPUTED
 // =====================
@@ -330,7 +365,7 @@ const formattedUpdateDate = computed(() => {
 
 const handleSearch = () => {
   if (searchTerm.value.trim().length >= 3) {
-    search(searchLimit.value);
+    search();
   }
 };
 
@@ -363,6 +398,35 @@ const downloadSelectedSearchFiles = () => {
   selectedSearchFiles.value = [];
 };
 
+const downloadCurrentFolder = async () => {
+  if (isAtRoot.value) {
+    console.warn('[App] No se puede descargar la raíz');
+    return;
+  }
+
+  if (!currentNodeId.value) {
+    console.error('[App] No hay carpeta actual para descargar');
+    return;
+  }
+
+  try {
+    // Obtener información de la carpeta actual
+    const folderInfo = breadcrumbPath.value.length > 0 
+      ? { id: currentNodeId.value, title: breadcrumbPath.value[breadcrumbPath.value.length - 1].title }
+      : { id: currentNodeId.value, title: 'Carpeta actual' };
+
+    const result = await downloadFolder(folderInfo);
+    
+    if (result.success) {
+      console.log(`[App] Descarga de carpeta iniciada: ${result.added} archivos agregados de ${result.totalFiles} totales`);
+    } else {
+      console.error('[App] Error descargando carpeta:', result.error);
+    }
+  } catch (error) {
+    console.error('[App] Excepción descargando carpeta:', error);
+  }
+};
+
 const loadUpdateDate = async () => {
   try {
     const result = await getDbUpdateDate();
@@ -371,6 +435,36 @@ const loadUpdateDate = async () => {
     }
   } catch (error) {
     console.error('Error cargando fecha de actualizaciÃ³n:', error);
+  }
+};
+
+const handleCleanHistory = async (daysOld) => {
+  try {
+    const result = await cleanHistory(daysOld);
+    if (result.success) {
+      showToast({
+        title: 'Historial limpiado',
+        message: `${result.count} registro(s) eliminado(s) de la base de datos`,
+        type: 'success',
+        duration: 5000
+      });
+      cleanupStats.value.lastDbCleanup = Date.now();
+    } else {
+      showToast({
+        title: 'Error al limpiar historial',
+        message: result.error || 'Error desconocido',
+        type: 'error',
+        duration: 5000
+      });
+    }
+  } catch (error) {
+    console.error('Error limpiando historial:', error);
+    showToast({
+      title: 'Error al limpiar historial',
+      message: error.message || 'Error desconocido',
+      type: 'error',
+      duration: 5000
+    });
   }
 };
 
@@ -386,6 +480,39 @@ watch(currentNodeId, () => {
 });
 
 // =====================
+// EVENT HANDLERS
+// =====================
+
+// Handlers para eventos de limpieza
+const handleHistoryCleaned = (event) => {
+  const { count } = event.detail;
+  if (showNotifications.value && count > 0) {
+    showToast({
+      title: 'Historial limpiado',
+      message: `${count} registro(s) antiguo(s) eliminado(s) de la base de datos`,
+      type: 'info',
+      duration: 5000
+    });
+    cleanupStats.value.lastDbCleanup = Date.now();
+  }
+};
+
+const handleMemoryCleaned = (event) => {
+  const { removed, kept, total } = event.detail;
+  if (showNotifications.value && removed > 0) {
+    showToast({
+      title: 'Memoria optimizada',
+      message: `${removed} descarga(s) antigua(s) removida(s). ${kept} mantenida(s) en memoria.`,
+      type: 'success',
+      duration: 4000
+    });
+    cleanupStats.value.lastMemoryCleanup = Date.now();
+    cleanupStats.value.totalRemoved += removed;
+    cleanupStats.value.totalKept = kept;
+  }
+};
+
+// =====================
 // LIFECYCLE
 // =====================
 
@@ -397,9 +524,18 @@ onMounted(async () => {
   await initNavigation();
   await initDownloads();
   await loadUpdateDate();
+
+  // Escuchar eventos de limpieza de historial
+  window.addEventListener('history-cleaned', handleHistoryCleaned);
+  window.addEventListener('memory-cleaned', handleMemoryCleaned);
 });
 
 onUnmounted(() => {
+  // Limpiar event listeners
+  window.removeEventListener('history-cleaned', handleHistoryCleaned);
+  window.removeEventListener('memory-cleaned', handleMemoryCleaned);
+  
+  // Limpiar composables
   cleanupDownloads();
   cleanupSearch();
 });

@@ -13,8 +13,9 @@
 
 const { app, BrowserWindow } = require('electron');
 const fs = require('fs');
+const path = require('path');
 const config = require('./config');
-const { configureLogger, logger, cleanOldLogs } = require('./utils');
+const { configureLogger, logger, cleanOldLogs, readJSONFile } = require('./utils');
 const database = require('./database');
 const queueDatabase = require('./queueDatabase');
 const downloadManager = require('./downloadManager');
@@ -58,6 +59,7 @@ process.on('unhandledRejection', (reason, promise) => {
 
 const progressThrottler = new ProgressThrottler();
 let cleanupInterval = null;
+let historyCleanupInterval = null;
 
 // =====================
 // INICIALIZACIÓN
@@ -130,23 +132,70 @@ async function initialize() {
         if (queuedDownloads.length > 0 || pausedDownloads.length > 0) {
             log.info(`Restaurando ${queuedDownloads.length} en cola + ${pausedDownloads.length} pausadas...`);
 
-            // Notificar al frontend sobre cada descarga
-            [...queuedDownloads, ...pausedDownloads].forEach((download, index) => {
+            // Leer configuración de reanudación automática
+            let autoResume = false; // Por defecto false - descargas quedan en espera
+            try {
+                const settingsPath = path.join(config.paths.configPath, 'download-settings.json');
+                if (fs.existsSync(settingsPath)) {
+                    const settings = readJSONFile('download-settings.json');
+                    if (settings && settings.autoResumeDownloads !== undefined) {
+                        autoResume = settings.autoResumeDownloads === true;
+                    }
+                }
+            } catch (error) {
+                log.warn('Error leyendo configuración de reanudación automática, usando valor por defecto:', error.message);
+            }
+
+            // Marcar todas las descargas en cola como pausadas (estado de espera)
+            // Esto permite al usuario decidir qué hacer con ellas
+            if (queuedDownloads.length > 0) {
+                log.info(`Marcando ${queuedDownloads.length} descargas en cola como pausadas (en espera)...`);
+                queuedDownloads.forEach((download) => {
+                    queueDatabase.pauseDownload(download.id);
+                    if (mainWindow && !mainWindow.isDestroyed()) {
+                        mainWindow.webContents.send('download-progress', {
+                            id: download.id,
+                            state: 'paused',
+                            title: download.title,
+                            progress: download.progress || 0
+                        });
+                    }
+                });
+            }
+
+            // Notificar al frontend sobre descargas pausadas existentes
+            pausedDownloads.forEach((download) => {
                 if (mainWindow && !mainWindow.isDestroyed()) {
                     mainWindow.webContents.send('download-progress', {
                         id: download.id,
-                        state: download.state,
+                        state: 'paused',
                         title: download.title,
-                        progress: download.progress,
-                        position: index + 1
+                        progress: download.progress || 0
                     });
                 }
             });
 
-            // Procesar cola después de delay
-            setTimeout(() => {
-                downloadManager.processQueue();
-            }, 1000);
+            // Si autoResume está activado, procesar automáticamente después de un delay
+            if (autoResume) {
+                setTimeout(() => {
+                    log.info('Reanudación automática activada, iniciando descargas...');
+                    // Reanudar todas las descargas pausadas
+                    const allPaused = queueDatabase.getPaused();
+                    allPaused.forEach((download) => {
+                        queueDatabase.resumeDownload(download.id);
+                    });
+                    
+                    // Cargar la cola en memoria y procesar
+                    const loadedCount = downloadManager.loadQueue();
+                    log.info(`Cola cargada en memoria: ${loadedCount} descargas`);
+                    
+                    setTimeout(() => {
+                        downloadManager.processQueue();
+                    }, 500);
+                }, 1000);
+            } else {
+                log.info('Descargas en estado de espera. El usuario puede reanudarlas, eliminarlas o cancelarlas desde la interfaz.');
+            }
         }
 
         // Enviar historial completo al frontend
@@ -165,11 +214,31 @@ async function initialize() {
         }
     }, config.downloads.staleTimeout);
 
-    // Limpiar historial antiguo (30 días)
+    // Limpiar historial antiguo (30 días) al iniciar
     const cleanedHistory = queueDatabase.cleanOldHistory(30);
     if (cleanedHistory > 0) {
         log.info(`Limpiados ${cleanedHistory} registros antiguos`);
     }
+
+    // Configurar limpieza automática periódica del historial (cada hora)
+    historyCleanupInterval = setInterval(() => {
+        try {
+            const cleaned = queueDatabase.cleanOldHistory(30);
+            if (cleaned > 0) {
+                log.info(`Limpieza automática: ${cleaned} registros antiguos eliminados`);
+                
+                // Notificar al frontend si hay ventana activa
+                if (mainWindow && !mainWindow.isDestroyed()) {
+                    mainWindow.webContents.send('history-cleaned', {
+                        count: cleaned,
+                        timestamp: Date.now()
+                    });
+                }
+            }
+        } catch (error) {
+            log.error('Error en limpieza automática de historial:', error);
+        }
+    }, 60 * 60 * 1000); // Cada hora
 
     endInit('exitosa');
     log.separator('APLICACIÓN LISTA');
@@ -206,9 +275,10 @@ function cleanup() {
     log.separator('LIMPIANDO RECURSOS');
 
     // [BLOQUE 1] Guardar estado de descargas activas en SQLite
+    // Guardar descargas simples activas
     const activeDownloads = downloadManager.activeDownloads;
     if (activeDownloads && activeDownloads.size > 0) {
-        log.info(`Guardando estado de ${activeDownloads.size} descargas activas...`);
+        log.info(`Guardando estado de ${activeDownloads.size} descargas simples activas...`);
         
         activeDownloads.forEach((download, id) => {
             queueDatabase.updateDownload(id, {
@@ -217,6 +287,20 @@ function cleanup() {
             });
         });
     }
+    
+    // Guardar descargas fragmentadas activas
+    const chunkedDownloads = downloadManager.chunkedDownloads;
+    if (chunkedDownloads && chunkedDownloads.size > 0) {
+        log.info(`Guardando estado de ${chunkedDownloads.size} descargas fragmentadas activas...`);
+        
+        chunkedDownloads.forEach((chunked, id) => {
+            queueDatabase.updateDownload(id, {
+                state: 'queued', // Volver a encolar para reintentar
+                lastError: 'Aplicación cerrada durante la descarga'
+            });
+        });
+    }
+    
     log.info('Estado de descargas guardado en SQLite');
 
     // Destruir downloadManager

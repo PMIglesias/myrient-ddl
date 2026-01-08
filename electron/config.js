@@ -159,9 +159,21 @@ module.exports = {
             dbBatchInterval: 2000,
 
             /**
-             * Buffer para fusión de chunks (64MB)
+             * Buffer para fusión de chunks (16MB por defecto, reducido para evitar bloqueo)
              */
-            mergeBufferSize: 64 * 1024 * 1024,
+            mergeBufferSize: 16 * 1024 * 1024,
+
+            /**
+             * Tamaño de batch para procesamiento de merge (8MB)
+             * Procesa en lotes para ceder control al event loop
+             */
+            mergeBatchSize: 8 * 1024 * 1024,
+
+            /**
+             * Intervalo para ceder control al event loop durante merge
+             * Cede cada N operaciones de lectura/escritura
+             */
+            mergeYieldInterval: 10,
 
             /**
              * Velocidad objetivo por chunk para ajuste adaptativo

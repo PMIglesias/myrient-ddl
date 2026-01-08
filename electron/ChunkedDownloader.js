@@ -886,7 +886,7 @@ class ChunkedDownloader {
     }
 
     /**
-     * Fusiona todos los chunks en el archivo final (versión optimizada)
+     * Fusiona todos los chunks en el archivo final (versión optimizada sin bloquear)
      */
     async _mergeChunks() {
         if (this.mergeInProgress) return;
@@ -895,12 +895,25 @@ class ChunkedDownloader {
 
         log.info(`Iniciando fusión optimizada de ${this.chunks.length} chunks`);
 
-        const BUFFER_SIZE = config.downloads.chunked?.mergeBufferSize || (64 * 1024 * 1024);
+        // Configuración para evitar bloqueo del event loop
+        const BUFFER_SIZE = config.downloads.chunked?.mergeBufferSize || (16 * 1024 * 1024); // 16MB por defecto
+        const BATCH_SIZE = config.downloads.chunked?.mergeBatchSize || (8 * 1024 * 1024); // 8MB por batch
+        const YIELD_INTERVAL = config.downloads.chunked?.mergeYieldInterval || 10; // Ceder cada 10 operaciones
 
         try {
             // Usar handle de archivo para control preciso
             const finalHandle = await fs.promises.open(this.savePath, 'w');
             let position = 0;
+            let operationCount = 0;
+
+            // Función helper para ceder control al event loop
+            const yieldToEventLoop = () => {
+                return new Promise(resolve => {
+                    setImmediate(() => {
+                        resolve();
+                    });
+                });
+            };
 
             for (let i = 0; i < this.chunks.length; i++) {
                 const chunk = this.chunks[i];
@@ -915,7 +928,16 @@ class ChunkedDownloader {
                     let bytesProcessed = 0;
 
                     while (bytesProcessed < chunkSize) {
-                        const toRead = Math.min(buffer.length, chunkSize - bytesProcessed);
+                        // Ceder control al event loop periódicamente
+                        if (operationCount > 0 && operationCount % YIELD_INTERVAL === 0) {
+                            await yieldToEventLoop();
+                        }
+
+                        const toRead = Math.min(
+                            Math.min(buffer.length, BATCH_SIZE), 
+                            chunkSize - bytesProcessed
+                        );
+                        
                         const { bytesRead } = await chunkHandle.read(
                             buffer, 0, toRead, bytesProcessed
                         );
@@ -925,10 +947,28 @@ class ChunkedDownloader {
                         await finalHandle.write(buffer, 0, bytesRead, position);
                         position += bytesRead;
                         bytesProcessed += bytesRead;
+                        operationCount++;
+
+                        // Actualizar progreso periódicamente (cada batch)
+                        if (operationCount % 5 === 0) {
+                            const chunkProgress = bytesProcessed / chunkSize;
+                            const overallProgress = (i + chunkProgress) / this.chunks.length;
+                            
+                            this.onProgress({
+                                downloadId: this.downloadId,
+                                state: 'merging',
+                                mergeProgress: overallProgress,
+                                currentChunk: i + 1,
+                                totalChunks: this.chunks.length
+                            });
+                        }
                     }
                 } finally {
                     await chunkHandle.close();
                 }
+
+                // Ceder control antes de eliminar archivo temporal
+                await yieldToEventLoop();
 
                 // Eliminar temp file inmediatamente para liberar espacio
                 try {
@@ -937,15 +977,20 @@ class ChunkedDownloader {
                     log.warn(`Error eliminando temp ${chunk.tempFile}:`, e.message);
                 }
 
-                // Actualizar progreso de fusión
+                // Actualizar progreso de fusión después de cada chunk
                 this.onProgress({
                     downloadId: this.downloadId,
                     state: 'merging',
-                    mergeProgress: (i + 1) / this.chunks.length
+                    mergeProgress: (i + 1) / this.chunks.length,
+                    currentChunk: i + 1,
+                    totalChunks: this.chunks.length
                 });
             }
 
             await finalHandle.close();
+
+            // Ceder control antes de verificar tamaño
+            await yieldToEventLoop();
 
             // Verificar tamaño final
             const finalStats = await fs.promises.stat(this.savePath);
@@ -955,13 +1000,28 @@ class ChunkedDownloader {
 
             log.info(`Fusión completada: ${this._formatBytes(finalStats.size)}`);
 
-            // Limpiar chunks de la BD
-            this.chunks.forEach(chunk => {
-                queueDatabase.updateChunk(this.downloadId, chunk.chunkIndex, {
+            // Ceder control antes de actualizar BD
+            await yieldToEventLoop();
+
+            // Limpiar chunks de la BD (en batch para no bloquear)
+            const chunkUpdatePromises = this.chunks.map(chunk => {
+                return queueDatabase.updateChunk(this.downloadId, chunk.chunkIndex, {
                     state: ChunkState.COMPLETED,
                     downloadedBytes: chunk.endByte - chunk.startByte + 1
                 });
             });
+
+            // Ejecutar actualizaciones en lotes para no bloquear
+            const BATCH_UPDATE_SIZE = 5;
+            for (let i = 0; i < chunkUpdatePromises.length; i += BATCH_UPDATE_SIZE) {
+                const batch = chunkUpdatePromises.slice(i, i + BATCH_UPDATE_SIZE);
+                await Promise.all(batch);
+                
+                // Ceder control entre lotes
+                if (i + BATCH_UPDATE_SIZE < chunkUpdatePromises.length) {
+                    await yieldToEventLoop();
+                }
+            }
 
             // Marcar descarga como completada
             this.state = 'completed';

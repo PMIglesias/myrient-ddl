@@ -128,6 +128,26 @@ export const download = async (params) => {
 };
 
 /**
+ * Descarga todos los archivos de una carpeta recursivamente
+ * @param {Object} params - Parámetros de descarga de carpeta
+ * @param {number} params.folderId - ID de la carpeta
+ * @param {string} params.downloadPath - Ruta de descarga
+ * @param {boolean} params.preserveStructure - Mantener estructura de carpetas
+ * @param {boolean} params.forceOverwrite - Forzar sobrescritura
+ */
+export const downloadFolder = async (params) => {
+    const api = getApi();
+    if (!api) return { success: false, error: 'API no disponible' };
+    
+    try {
+        return await api.downloadFolder(params);
+    } catch (error) {
+        console.error('[API] Error iniciando descarga de carpeta:', error);
+        return { success: false, error: error.message };
+    }
+};
+
+/**
  * Pausa una descarga
  * @param {number} downloadId - ID de la descarga
  */
@@ -139,6 +159,22 @@ export const pauseDownload = async (downloadId) => {
         return await api.pauseDownload(downloadId);
     } catch (error) {
         console.error('[API] Error pausando descarga:', error);
+        return { success: false, error: error.message };
+    }
+};
+
+/**
+ * Reanuda una descarga pausada
+ * @param {number} downloadId - ID de la descarga
+ */
+export const resumeDownload = async (downloadId) => {
+    const api = getApi();
+    if (!api) return { success: false, error: 'API no disponible' };
+    
+    try {
+        return await api.resumeDownload(downloadId);
+    } catch (error) {
+        console.error('[API] Error reanudando descarga:', error);
         return { success: false, error: error.message };
     }
 };
@@ -171,6 +207,22 @@ export const getDownloadStats = async () => {
     } catch (error) {
         console.error('[API] Error obteniendo estadísticas:', error);
         return null;
+    }
+};
+
+/**
+ * Limpia el historial de descargas manualmente
+ * @param {number} daysOld - Días de antigüedad (default: 30)
+ */
+export const cleanHistory = async (daysOld = 30) => {
+    const api = getApi();
+    if (!api) return { success: false, error: 'API no disponible' };
+    
+    try {
+        return await api.cleanHistory(daysOld);
+    } catch (error) {
+        console.error('[API] Error limpiando historial:', error);
+        return { success: false, error: error.message };
     }
 };
 
@@ -273,6 +325,36 @@ export const onDownloadProgress = (callback) => {
     return api.on('download-progress', callback);
 };
 
+/**
+ * Suscribe a eventos de limpieza de historial
+ * @param {Function} callback - Función a ejecutar cuando se limpia el historial
+ * @returns {Function} Función para desuscribirse
+ */
+export const onHistoryCleaned = (callback) => {
+    const api = getApi();
+    if (!api) {
+        console.warn('[API] No se puede suscribir a eventos: API no disponible');
+        return () => {};
+    }
+    
+    return api.on('history-cleaned', callback);
+};
+
+/**
+ * Suscribe a eventos de descargas restauradas
+ * @param {Function} callback - Función a ejecutar cuando se restauran descargas
+ * @returns {Function} Función para desuscribirse
+ */
+export const onDownloadsRestored = (callback) => {
+    const api = getApi();
+    if (!api) {
+        console.warn('[API] No se puede suscribir a eventos: API no disponible');
+        return () => {};
+    }
+    
+    return api.on('downloads-restored', callback);
+};
+
 // =====================
 // EXPORT DEFAULT
 // =====================
@@ -287,9 +369,12 @@ export default {
     
     // Descargas
     download,
+    downloadFolder,
     pauseDownload,
+    resumeDownload,
     cancelDownload,
     getDownloadStats,
+    cleanHistory,
     
     // Configuración
     readConfigFile,
@@ -302,5 +387,7 @@ export default {
     selectFolder,
     
     // Eventos
-    onDownloadProgress
+    onDownloadProgress,
+    onHistoryCleaned,
+    onDownloadsRestored
 };

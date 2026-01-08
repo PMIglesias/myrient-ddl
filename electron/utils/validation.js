@@ -47,12 +47,13 @@ function isValidUrl(urlString) {
 
 /**
  * Escapa términos que dejan la caga para consultas LIKE en SQLite y que no te inyecten weas
+ * Usa '|' como carácter de escape (configurado en la consulta SQL)
  */
 function escapeLikeTerm(term) {
     return term
-        .replace(/\\/g, '\\\\')
-        .replace(/%/g, '\\%')
-        .replace(/_/g, '\\_');
+        .replace(/\|/g, '||')  // Escapar el carácter de escape primero
+        .replace(/%/g, '|%')   // Escapar %
+        .replace(/_/g, '|_');  // Escapar _
 }
 
 /**
@@ -193,6 +194,35 @@ function validateConfigFilename(filename) {
 }
 
 /**
+ * Valida parámetros para descargar una carpeta
+ */
+function validateDownloadFolderParams(params) {
+    if (schemas && schemas.validateDownloadFolderParams) {
+        const result = schemas.validateDownloadFolderParams(params);
+        return {
+            valid: result.success,
+            data: result.data,
+            error: result.error
+        };
+    }
+    
+    // Validación básica
+    if (!params) {
+        return { valid: false, error: 'Parámetros no proporcionados' };
+    }
+
+    if (!params.folderId || typeof params.folderId !== 'number') {
+        return { valid: false, error: 'ID de carpeta inválido' };
+    }
+
+    if (params.folderId <= 0) {
+        return { valid: false, error: 'ID de carpeta debe ser mayor a 0' };
+    }
+
+    return { valid: true, data: params };
+}
+
+/**
  * Traduce códigos de error de red a mensajes para que cualquiera pueda entenderlo
  */
 function getNetworkErrorMessage(error) {
@@ -216,5 +246,6 @@ module.exports = {
     validateNodeId,
     validateDownloadId,
     validateConfigFilename,
+    validateDownloadFolderParams,
     getNetworkErrorMessage
 };

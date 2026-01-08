@@ -26,7 +26,9 @@
   </div>
 
   <div v-else class="empty-state">
-    <p>No tienes carpetas favoritas. Agrega carpetas usando la estrella al pasar el mouse sobre ellas.</p>
+    <div class="empty-state-icon">⭐</div>
+    <h3>Sin favoritos</h3>
+    <p>No tienes carpetas favoritas aún. Agrega carpetas usando la estrella ⭐ al pasar el mouse sobre ellas.</p>
   </div>
 </template>
 

@@ -80,16 +80,122 @@ class DatabaseService {
     }
 
     /**
+     * Verifica si existe una tabla FTS disponible
+     * @returns {Object|null} Objeto con nombre de tabla y tipo, o null
+     */
+    _detectFTS() {
+        try {
+            // Verificar si existe una tabla FTS5 (más común y mejor)
+            const fts5Tables = this.db.prepare(`
+                SELECT name, sql FROM sqlite_master 
+                WHERE type='table' 
+                AND (name LIKE '%fts%' OR name LIKE '%_fts%' OR name LIKE '%_content%')
+                AND sql LIKE '%USING fts5%'
+            `).all();
+            
+            if (fts5Tables.length > 0) {
+                log.info(`Tabla FTS5 detectada: ${fts5Tables[0].name}`);
+                return { name: fts5Tables[0].name, type: 'fts5' };
+            }
+            
+            // Verificar FTS4
+            const fts4Tables = this.db.prepare(`
+                SELECT name, sql FROM sqlite_master 
+                WHERE type='table' 
+                AND (name LIKE '%fts%' OR name LIKE '%_fts%')
+                AND sql LIKE '%USING fts4%'
+            `).all();
+            
+            if (fts4Tables.length > 0) {
+                log.info(`Tabla FTS4 detectada: ${fts4Tables[0].name}`);
+                return { name: fts4Tables[0].name, type: 'fts4' };
+            }
+            
+            // Verificar si FTS5 está disponible (aunque no haya tabla)
+            try {
+                const fts5Available = this.db.prepare(`
+                    SELECT sqlite_compileoption_used('ENABLE_FTS5') as available
+                `).get();
+                
+                if (fts5Available && fts5Available.available) {
+                    log.debug('FTS5 está disponible pero no hay tabla FTS configurada');
+                }
+            } catch (e) {
+                // Ignorar si la función no está disponible
+            }
+            
+            return null;
+        } catch (error) {
+            log.warn('Error detectando FTS:', error.message);
+            return null;
+        }
+    }
+
+    /**
      * Prepara los statements reutilizables
      */
     _prepareStatements() {
         log.debug('Preparando statements SQL...');
         
+        // Detectar FTS
+        const ftsInfo = this._detectFTS();
+        this.ftsTable = ftsInfo ? ftsInfo.name : null;
+        this.ftsType = ftsInfo ? ftsInfo.type : null;
+        this.useFTS = !!this.ftsTable;
+        
+        // Usar '|' como carácter de escape (más seguro que \)
         this.statements = {
+            // Búsqueda FTS (si está disponible)
+            searchFTS: this.useFTS ? (() => {
+                const tableName = this.ftsTable;
+                // FTS5 tiene bm25(), FTS4 no tiene función de ranking estándar
+                // Para FTS4, usamos matchinfo() o simplemente ordenamos por título
+                if (this.ftsType === 'fts5') {
+                    return this.db.prepare(`
+                        SELECT n.id, n.title, n.modified_date, n.type, n.parent_id,
+                               bm25(${tableName}) AS relevance
+                        FROM ${tableName} fts
+                        JOIN nodes n ON n.id = fts.rowid
+                        WHERE ${tableName} MATCH ?
+                        ORDER BY relevance, n.title ASC
+                        LIMIT 500
+                    `);
+                } else {
+                    // FTS4: usar matchinfo para ranking básico
+                    return this.db.prepare(`
+                        SELECT n.id, n.title, n.modified_date, n.type, n.parent_id,
+                               0 AS relevance
+                        FROM ${tableName} fts
+                        JOIN nodes n ON n.id = fts.rowid
+                        WHERE ${tableName} MATCH ?
+                        ORDER BY n.title ASC
+                        LIMIT 500
+                    `);
+                }
+            })() : null,
+
+            // Búsqueda mejorada con LIKE (fallback)
+            searchLike: this.db.prepare(`
+                SELECT id, title, modified_date, type, parent_id,
+                       CASE 
+                           WHEN title LIKE ? THEN 1
+                           WHEN title LIKE ? THEN 2
+                           WHEN title LIKE ? THEN 3
+                           ELSE 4
+                       END AS relevance
+                FROM nodes 
+                WHERE title LIKE ? ESCAPE '|'
+                   OR title LIKE ? ESCAPE '|'
+                   OR title LIKE ? ESCAPE '|'
+                ORDER BY relevance ASC, title ASC
+                LIMIT 500
+            `),
+
+            // Búsqueda simple (compatibilidad)
             search: this.db.prepare(`
                 SELECT id, title, modified_date, type, parent_id
                 FROM nodes 
-                WHERE title LIKE ? ESCAPE '\\\\'
+                WHERE title LIKE ? ESCAPE '|'
                 ORDER BY title ASC
                 LIMIT 500
             `),
@@ -130,6 +236,22 @@ class DatabaseService {
                 AND modified_date IS NOT NULL
                 ORDER BY modified_date DESC 
                 LIMIT 1
+            `),
+
+            getAllFilesRecursive: this.db.prepare(`
+                WITH RECURSIVE folder_tree AS (
+                    SELECT id, parent_id, title, type, url, size, modified_date
+                    FROM nodes 
+                    WHERE id = ?
+                    UNION ALL
+                    SELECT n.id, n.parent_id, n.title, n.type, n.url, n.size, n.modified_date
+                    FROM nodes n
+                    INNER JOIN folder_tree ft ON n.parent_id = ft.id
+                )
+                SELECT id, title, url, size, modified_date
+                FROM folder_tree
+                WHERE type = 'File'
+                ORDER BY title ASC
             `)
         };
         
@@ -137,9 +259,70 @@ class DatabaseService {
     }
 
     /**
-     * Busca nodos por término
-     * el param {string} searchTerm es el término de búsqueda
-     * y el returns {Object} da resultado de la búsqueda
+     * Prepara término de búsqueda para FTS5
+     * @param {string} term - Término de búsqueda
+     * @returns {string} Término formateado para FTS5
+     */
+    _prepareFTSTerm(term) {
+        // FTS5 usa sintaxis especial:
+        // - "palabra" busca exacta
+        // - palabra busca cualquier coincidencia
+        // - palabra* busca prefijos
+        // - palabra1 OR palabra2 busca cualquiera
+        // - palabra1 AND palabra2 busca ambas
+        
+        const words = term.trim()
+            .split(/\s+/)
+            .filter(w => w.length > 0)
+            .map(w => {
+                // Escapar caracteres especiales de FTS
+                const escaped = w.replace(/["'*]/g, '');
+                // Agregar wildcard al final para búsqueda de prefijos
+                return `${escaped}*`;
+            });
+        
+        // Si hay múltiples palabras, usar AND para que todas estén presentes
+        return words.length > 1 ? words.join(' AND ') : words[0] || term;
+    }
+
+    /**
+     * Prepara término de búsqueda para LIKE mejorado
+     * @param {string} term - Término de búsqueda
+     * @returns {Array<string>} Array con patrones de búsqueda
+     */
+    _prepareLikeTerms(term) {
+        const escaped = escapeLikeTerm(term);
+        return [
+            `${escaped}%`,      // Empieza con (mayor relevancia)
+            `% ${escaped}%`,   // Palabra completa (buena relevancia)
+            `%${escaped}%`     // Contiene (menor relevancia)
+        ];
+    }
+
+    /**
+     * Búsqueda usando LIKE mejorado con ranking
+     * @param {string} term - Término de búsqueda
+     * @returns {Array} Resultados
+     */
+    _searchWithLike(term) {
+        const patterns = this._prepareLikeTerms(term);
+        const results = this.statements.searchLike.all(
+            patterns[0],  // Empieza con
+            patterns[1],  // Palabra completa
+            patterns[2],  // Contiene
+            patterns[0],  // WHERE empieza con
+            patterns[1],  // OR palabra completa
+            patterns[2]   // OR contiene
+        );
+        
+        log.debug(`Búsqueda LIKE mejorada "${term}": ${results.length} resultados`);
+        return results;
+    }
+
+    /**
+     * Busca nodos por término usando FTS si está disponible, sino LIKE mejorado
+     * @param {string} searchTerm - Término de búsqueda
+     * @returns {Object} Resultado de la búsqueda
      */
     search(searchTerm) {
         if (!this.db) {
@@ -156,10 +339,26 @@ class DatabaseService {
         }
 
         try {
-            const escapedTerm = escapeLikeTerm(cleanSearchTerm);
-            const results = this.statements.search.all(`%${escapedTerm}%`);
-
-            log.debug(`Búsqueda "${cleanSearchTerm}": ${results.length} resultados`);
+            let results;
+            
+            if (this.useFTS && this.statements.searchFTS) {
+                // Usar FTS5/FTS4
+                const ftsTerm = this._prepareFTSTerm(cleanSearchTerm);
+                log.debug(`Búsqueda FTS "${cleanSearchTerm}" -> "${ftsTerm}"`);
+                
+                try {
+                    results = this.statements.searchFTS.all(ftsTerm);
+                    log.debug(`Búsqueda FTS: ${results.length} resultados`);
+                } catch (ftsError) {
+                    // Si FTS falla, usar fallback
+                    log.warn('Error en búsqueda FTS, usando fallback:', ftsError.message);
+                    this.useFTS = false;
+                    results = this._searchWithLike(cleanSearchTerm);
+                }
+            } else {
+                // Usar búsqueda LIKE mejorada
+                results = this._searchWithLike(cleanSearchTerm);
+            }
 
             const normalized = results.map(item => this._normalizeNode(item));
 
@@ -290,6 +489,48 @@ class DatabaseService {
         } catch (error) {
             log.error('Error al obtener ruta de ancestros:', error);
             return [];
+        }
+    }
+
+    /**
+     * Obtiene todos los archivos de una carpeta recursivamente
+     * @param {number} folderId - ID de la carpeta
+     * @returns {Object} Resultado con lista de archivos
+     */
+    getAllFilesInFolder(folderId) {
+        if (!this.db) {
+            return { success: false, error: 'Base de datos no disponible' };
+        }
+
+        try {
+            // Verificar que el nodo existe y es una carpeta
+            const node = this.statements.getNodeById.get(folderId);
+            if (!node) {
+                return { success: false, error: 'Carpeta no encontrada' };
+            }
+
+            if (this._normalizeType(node.type) !== 'folder') {
+                return { success: false, error: 'El nodo especificado no es una carpeta' };
+            }
+
+            // Obtener todos los archivos recursivamente
+            const files = this.statements.getAllFilesRecursive.all(folderId);
+            
+            log.debug(`Archivos encontrados en carpeta ${folderId}: ${files.length} archivos`);
+
+            return { 
+                success: true, 
+                data: files.map(file => ({
+                    id: file.id,
+                    title: file.title.replace(/\/$/, ''),
+                    url: file.url,
+                    size: file.size,
+                    modified_date: file.modified_date
+                }))
+            };
+        } catch (error) {
+            log.error('Error al obtener archivos de carpeta:', error);
+            return { success: false, error: error.message };
         }
     }
 

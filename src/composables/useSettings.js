@@ -17,6 +17,12 @@ const showNotifications = ref(true);
 const maxParallelDownloads = ref(3);
 const searchLimit = ref(500);
 const isDarkMode = ref(true);
+const autoResumeDownloads = ref(true); // Por defecto true para mantener comportamiento actual
+
+// Configuración de límites de memoria para historial
+const maxHistoryInMemory = ref(100);
+const maxCompletedInMemory = ref(50);
+const maxFailedInMemory = ref(20);
 
 // Flag para evitar guardar durante la carga inicial
 let isLoading = false;
@@ -43,6 +49,10 @@ export function useSettings() {
                 showNotifications.value = result.data.showNotifications !== false;
                 maxParallelDownloads.value = result.data.maxParallelDownloads || 3;
                 searchLimit.value = result.data.searchLimit || 500;
+                autoResumeDownloads.value = result.data.autoResumeDownloads !== false; // Por defecto true
+                maxHistoryInMemory.value = result.data.maxHistoryInMemory || 100;
+                maxCompletedInMemory.value = result.data.maxCompletedInMemory || 50;
+                maxFailedInMemory.value = result.data.maxFailedInMemory || 20;
             }
         } catch (error) {
             console.error('[useSettings] Error cargando configuración:', error);
@@ -81,7 +91,11 @@ export function useSettings() {
                 preserveStructure: preserveStructure.value,
                 showNotifications: showNotifications.value,
                 maxParallelDownloads: maxParallelDownloads.value,
-                searchLimit: searchLimit.value
+                searchLimit: searchLimit.value,
+                autoResumeDownloads: autoResumeDownloads.value,
+                maxHistoryInMemory: maxHistoryInMemory.value,
+                maxCompletedInMemory: maxCompletedInMemory.value,
+                maxFailedInMemory: maxFailedInMemory.value
             });
         } catch (error) {
             console.error('[useSettings] Error guardando configuración:', error);
@@ -154,7 +168,7 @@ export function useSettings() {
     // =====================
 
     // Auto-guardar cuando cambian valores críticos
-    watch([preserveStructure, showNotifications, maxParallelDownloads, searchLimit], () => {
+    watch([preserveStructure, showNotifications, maxParallelDownloads, searchLimit, autoResumeDownloads, maxHistoryInMemory, maxCompletedInMemory, maxFailedInMemory], () => {
         saveDownloadSettings();
     }, { deep: false });
 
@@ -170,6 +184,10 @@ export function useSettings() {
         maxParallelDownloads,
         searchLimit,
         isDarkMode,
+        autoResumeDownloads,
+        maxHistoryInMemory,
+        maxCompletedInMemory,
+        maxFailedInMemory,
 
         // Métodos de carga
         loadDownloadSettings,

@@ -7,6 +7,8 @@
           @click="$emit('toggle-favorites')" 
           class="favorites-btn" 
           :class="{ active: showingFavorites }"
+          aria-label="Mostrar u ocultar favoritos"
+          :aria-pressed="showingFavorites"
         >
           ⭐ Favoritos
         </button>
@@ -14,6 +16,8 @@
           @click="$emit('toggle-downloads')" 
           class="downloads-btn" 
           :class="{ active: showingDownloads }"
+          aria-label="Mostrar u ocultar panel de descargas"
+          :aria-pressed="showingDownloads"
         >
           ⬇️ Descargas ({{ downloadCount }})
         </button>
@@ -22,6 +26,8 @@
           @click="$emit('toggle-filters')" 
           class="filters-btn" 
           :class="{ active: showAdvancedFilters }"
+          aria-label="Mostrar u ocultar filtros avanzados"
+          :aria-pressed="showAdvancedFilters"
         >
           🔍 Filtros Avanzados
         </button>
@@ -58,8 +64,15 @@
       @input="$emit('update:searchTerm', $event.target.value)"
       @keydown.enter="$emit('search')"
       placeholder="Buscar en Myrient... (mínimo 3 caracteres)"
+      aria-label="Campo de búsqueda"
+      aria-describedby="search-hint"
     >
-    <button @click="$emit('search')" :disabled="searchTerm.trim().length < 3">
+    <button 
+      @click="$emit('search')" 
+      :disabled="searchTerm.trim().length < 3"
+      aria-label="Realizar búsqueda"
+      :aria-disabled="searchTerm.trim().length < 3"
+    >
       🔍 Buscar
     </button>
   </div>
