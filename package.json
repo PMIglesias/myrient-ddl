@@ -12,6 +12,7 @@
   "dependencies": {
     "better-sqlite3": "^12.5.0",
     "electron-log": "^5.4.3",
+    "glob": "^13.0.0",
     "rimraf": "^6.1.2",
     "vue": "^3.5.26",
     "zod": "^4.3.5"
