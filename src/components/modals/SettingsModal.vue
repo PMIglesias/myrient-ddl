@@ -198,6 +198,43 @@
         </div>
       </div>
 
+      <!-- Sección Apariencia -->
+      <div class="settings-section">
+        <h3>Apariencia</h3>
+        <div class="setting-item">
+          <label>Color primario</label>
+          <div class="setting-control">
+            <div class="color-picker-group">
+              <button
+                v-for="(colorConfig, colorKey) in primaryColors"
+                :key="colorKey"
+                @click="$emit('set-primary-color', colorKey)"
+                :class="['color-option-btn', { active: primaryColor === colorKey }]"
+                :style="{ backgroundColor: colorConfig.value }"
+                :title="colorConfig.name"
+                :aria-label="`Seleccionar color ${colorConfig.name}`"
+              >
+                <span v-if="primaryColor === colorKey" class="color-check">✓</span>
+              </button>
+            </div>
+            <span class="setting-hint">Selecciona el color primario de la interfaz</span>
+          </div>
+        </div>
+
+        <div class="setting-item">
+          <label class="checkbox-label">
+            <input 
+              type="checkbox" 
+              :checked="showChunkProgress"
+              @change="$emit('update:showChunkProgress', $event.target.checked)"
+              class="checkbox-input"
+            />
+            Mostrar indicador de progreso de chunks
+          </label>
+          <span class="setting-hint">Muestra el progreso detallado de cada chunk en descargas fragmentadas</span>
+        </div>
+      </div>
+
       <!-- Sección Información -->
       <div class="settings-section">
         <h3>Información</h3>
@@ -219,6 +256,8 @@
 </template>
 
 <script setup>
+import { PRIMARY_COLORS } from '../../composables/useSettings';
+
 // Props
 defineProps({
   show: {
@@ -272,6 +311,14 @@ defineProps({
   cleanupStats: {
     type: Object,
     default: null
+  },
+  primaryColor: {
+    type: String,
+    default: 'green'
+  },
+  showChunkProgress: {
+    type: Boolean,
+    default: true
   }
 });
 
@@ -287,11 +334,16 @@ defineEmits([
   'update:maxHistoryInMemory',
   'update:maxCompletedInMemory',
   'update:maxFailedInMemory',
+  'update:showChunkProgress',
   'save-settings',
   'select-folder',
   'clear-favorites',
-  'clean-history'
+  'clean-history',
+  'set-primary-color'
 ]);
+
+// Exponer colores primarios para el template
+const primaryColors = PRIMARY_COLORS;
 
 // Métodos
 const formatDate = (timestamp) => {

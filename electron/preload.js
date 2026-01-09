@@ -36,6 +36,7 @@ const validInvokeChannels = [
     'resume-download',
     'cancel-download',
     'get-download-stats',
+    'get-queue-time-estimate',
     'clean-history',
     // Configuración
     'read-config-file',
@@ -180,6 +181,12 @@ const api = {
      * Obtiene estadísticas de descargas
      */
     getDownloadStats: () => safeInvoke('get-download-stats'),
+
+    /**
+     * Obtiene la estimación de tiempo de cola
+     * @param {number|null} downloadId - ID de descarga específica (opcional)
+     */
+    getQueueTimeEstimate: (downloadId = null) => safeInvoke('get-queue-time-estimate', downloadId),
 
     /**
      * Limpia el historial de descargas

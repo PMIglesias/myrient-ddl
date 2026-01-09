@@ -119,7 +119,7 @@ async function initialize() {
 
     // Configurar throttler y download manager
     progressThrottler.setMainWindow(mainWindow);
-    downloadManager.initialize(mainWindow, progressThrottler);
+    await downloadManager.initialize(mainWindow, progressThrottler);
 
     // Registrar handlers IPC
     registerHandlers(mainWindow);

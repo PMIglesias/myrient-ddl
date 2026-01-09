@@ -72,12 +72,64 @@ export function useDownloadReconciliation(processDownloadQueueFn, saveDownloadHi
                 dl.state = 'starting';
                 dl.percent = 0;
                 delete dl.error;
+                // Si es descarga chunked, guardar información inicial de chunks
+                if (info.chunked || info.numChunks) {
+                    dl.chunked = true;
+                    dl.totalChunks = info.numChunks || info.totalChunks || 0;
+                    dl.activeChunks = 0;
+                    dl.completedChunks = 0;
+                    // Inicializar chunkProgress como array vacío si no viene
+                    if (!dl.chunkProgress) {
+                        dl.chunkProgress = [];
+                    }
+                }
                 break;
 
             case 'progressing':
                 dl.state = 'progressing';
                 dl.percent = info.percent;
                 delete dl.error;
+                delete dl.merging;
+                delete dl.mergeProgress;
+                delete dl.mergeSpeed;
+                
+                // Guardar información granular de chunks si está disponible
+                // IMPORTANTE: Actualizar chunks incluso si chunked cambió, para mantener datos
+                if (info.chunked) {
+                    dl.chunked = true;
+                    // Solo actualizar chunkProgress si viene en el evento (no usar || [] para evitar perder datos)
+                    if (info.chunkProgress !== undefined && info.chunkProgress !== null) {
+                        dl.chunkProgress = Array.isArray(info.chunkProgress) ? info.chunkProgress : [];
+                    } else if (dl.chunkProgress === undefined) {
+                        // Solo establecer array vacío si no existe previamente
+                        dl.chunkProgress = [];
+                    }
+                    // Actualizar contadores si vienen
+                    if (info.activeChunks !== undefined) dl.activeChunks = info.activeChunks;
+                    if (info.completedChunks !== undefined) dl.completedChunks = info.completedChunks;
+                    if (info.totalChunks !== undefined) dl.totalChunks = info.totalChunks;
+                } else {
+                    // Si no es chunked, limpiar solo si realmente no hay información de chunks
+                    // Pero mantener chunkProgress si existe (puede ser útil para mostrar estado final)
+                    if (!info.chunkProgress || (Array.isArray(info.chunkProgress) && info.chunkProgress.length === 0)) {
+                        delete dl.chunked;
+                        // No eliminar chunkProgress inmediatamente, puede ser útil para mostrar estado
+                        // delete dl.chunkProgress;
+                        delete dl.activeChunks;
+                        delete dl.completedChunks;
+                        delete dl.totalChunks;
+                    }
+                }
+                
+                // Guardar remainingTime en el objeto download también
+                // Solo actualizar si viene un valor válido (no usar || 0 porque 0 es válido)
+                if (info.remainingTime !== undefined && info.remainingTime !== null && isFinite(info.remainingTime)) {
+                    dl.remainingTime = info.remainingTime;
+                } else if (dl.remainingTime === undefined) {
+                    // Solo establecer 0 si no existe previamente
+                    dl.remainingTime = 0;
+                }
+                
                 speedStats.value.set(info.id, {
                     speed: info.speed || 0,
                     totalBytes: info.totalBytes || 0,
@@ -86,11 +138,56 @@ export function useDownloadReconciliation(processDownloadQueueFn, saveDownloadHi
                 });
                 break;
 
+            case 'merging':
+                dl.state = 'merging';
+                dl.percent = info.percent || info.mergeProgress || 0;
+                delete dl.error;
+                dl.merging = true;
+                
+                // Guardar información de merge
+                dl.mergeProgress = info.mergeProgress || info.percent || 0;
+                dl.mergeSpeed = info.mergeSpeed || (info.speed || 0); // MB/s
+                dl.currentChunk = info.currentChunk;
+                dl.bytesProcessed = info.bytesProcessed;
+                
+                // Mantener información de chunks si está disponible
+                if (info.chunked || dl.chunked) {
+                    dl.chunked = true;
+                    dl.chunkProgress = info.chunkProgress || dl.chunkProgress || [];
+                    dl.totalChunks = info.totalChunks || dl.totalChunks || 0;
+                }
+                
+                speedStats.value.set(info.id, {
+                    speed: info.speed || info.mergeSpeed || 0,
+                    totalBytes: info.totalBytes || 0,
+                    downloadedBytes: info.bytesProcessed || info.downloadedBytes || 0,
+                    remainingTime: 0 // No hay tiempo restante en merge
+                });
+                break;
+
             case 'completed':
                 dl.state = 'completed';
-                dl.percent = 1;
+                dl.percent = 1; // Asegurar 100% al completar
                 dl.completedAt = Date.now();
                 dl.savePath = info.savePath;
+                
+                // Limpiar información de merge si estaba fusionando
+                delete dl.merging;
+                delete dl.mergeProgress;
+                delete dl.mergeSpeed;
+                delete dl.currentChunk;
+                delete dl.bytesProcessed;
+                
+                // Mantener información de chunks para referencia (opcional)
+                // Se puede limpiar si no se necesita después de completar
+                if (dl.chunked) {
+                    // Opcionalmente limpiar información de chunks después de completar
+                    // delete dl.chunkProgress;
+                    // delete dl.activeChunks;
+                    // delete dl.completedChunks;
+                    // delete dl.totalChunks;
+                }
+                
                 speedStats.value.delete(info.id);
                 downloadQueue.value = downloadQueue.value.filter(d => d.id !== info.id);
                 if (saveDownloadHistoryFn) saveDownloadHistoryFn();

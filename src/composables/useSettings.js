@@ -18,11 +18,25 @@ const maxParallelDownloads = ref(3);
 const searchLimit = ref(500);
 const isDarkMode = ref(true);
 const autoResumeDownloads = ref(true); // Por defecto true para mantener comportamiento actual
+const primaryColor = ref('green'); // Color primario por defecto: verde
 
 // Configuración de límites de memoria para historial
 const maxHistoryInMemory = ref(100);
 const maxCompletedInMemory = ref(50);
 const maxFailedInMemory = ref(20);
+
+// Configuración de UI
+const showChunkProgress = ref(true); // Mostrar indicador de chunks por defecto
+
+// Colores primarios disponibles
+export const PRIMARY_COLORS = {
+    green: { name: 'Verde', value: '#4CAF50', hover: '#45a049' },
+    blue: { name: 'Azul', value: '#2196F3', hover: '#1976D2' },
+    red: { name: 'Rojo', value: '#f44336', hover: '#d32f2f' },
+    purple: { name: 'Púrpura', value: '#9c27b0', hover: '#7b1fa2' },
+    orange: { name: 'Naranja', value: '#ff9800', hover: '#f57c00' },
+    cyan: { name: 'Cian', value: '#00bcd4', hover: '#0097a7' }
+};
 
 // Flag para evitar guardar durante la carga inicial
 let isLoading = false;
@@ -53,6 +67,7 @@ export function useSettings() {
                 maxHistoryInMemory.value = result.data.maxHistoryInMemory || 100;
                 maxCompletedInMemory.value = result.data.maxCompletedInMemory || 50;
                 maxFailedInMemory.value = result.data.maxFailedInMemory || 20;
+                showChunkProgress.value = result.data.showChunkProgress !== false; // Por defecto true
             }
         } catch (error) {
             console.error('[useSettings] Error cargando configuración:', error);
@@ -69,7 +84,15 @@ export function useSettings() {
             const result = await readConfigFile('ui-preferences.json');
             if (result.success && result.data) {
                 isDarkMode.value = result.data.isDarkMode !== false;
+                if (result.data.primaryColor && PRIMARY_COLORS[result.data.primaryColor]) {
+                    primaryColor.value = result.data.primaryColor;
+                }
+                // showChunkProgress puede estar en ui-preferences o en download-settings
+                if (result.data.showChunkProgress !== undefined) {
+                    showChunkProgress.value = result.data.showChunkProgress !== false;
+                }
             }
+            updatePrimaryColor();
         } catch (error) {
             console.error('[useSettings] Error cargando preferencias UI:', error);
         }
@@ -96,6 +119,7 @@ export function useSettings() {
                 maxHistoryInMemory: maxHistoryInMemory.value,
                 maxCompletedInMemory: maxCompletedInMemory.value,
                 maxFailedInMemory: maxFailedInMemory.value
+                // showChunkProgress se guarda en ui-preferences, no en download-settings
             });
         } catch (error) {
             console.error('[useSettings] Error guardando configuración:', error);
@@ -108,8 +132,11 @@ export function useSettings() {
     const saveUIPreferences = async () => {
         try {
             await writeConfigFile('ui-preferences.json', {
-                isDarkMode: isDarkMode.value
+                isDarkMode: isDarkMode.value,
+                primaryColor: primaryColor.value,
+                showChunkProgress: showChunkProgress.value
             });
+            updatePrimaryColor();
         } catch (error) {
             console.error('[useSettings] Error guardando preferencias UI:', error);
         }
@@ -153,6 +180,28 @@ export function useSettings() {
     };
 
     /**
+     * Actualiza el color primario en CSS
+     */
+    const updatePrimaryColor = () => {
+        if (typeof document !== 'undefined' && typeof document.documentElement !== 'undefined') {
+            const colorConfig = PRIMARY_COLORS[primaryColor.value] || PRIMARY_COLORS.green;
+            document.documentElement.style.setProperty('--primary-color', colorConfig.value);
+            document.documentElement.style.setProperty('--primary-color-hover', colorConfig.hover);
+        }
+    };
+
+    /**
+     * Cambia el color primario
+     */
+    const setPrimaryColor = (color) => {
+        if (PRIMARY_COLORS[color]) {
+            primaryColor.value = color;
+            updatePrimaryColor();
+            saveUIPreferences();
+        }
+    };
+
+    /**
      * Inicializa la configuración
      */
     const initSettings = async () => {
@@ -161,15 +210,21 @@ export function useSettings() {
             loadUIPreferences()
         ]);
         updateThemeClass();
+        updatePrimaryColor();
     };
 
     // =====================
     // WATCHERS AUTOMÁTICOS
     // =====================
 
-    // Auto-guardar cuando cambian valores críticos
+    // Auto-guardar cuando cambian valores de descargas
     watch([preserveStructure, showNotifications, maxParallelDownloads, searchLimit, autoResumeDownloads, maxHistoryInMemory, maxCompletedInMemory, maxFailedInMemory], () => {
         saveDownloadSettings();
+    }, { deep: false });
+
+    // Auto-guardar cuando cambian preferencias de UI
+    watch([isDarkMode, primaryColor, showChunkProgress], () => {
+        saveUIPreferences();
     }, { deep: false });
 
     // =====================
@@ -188,6 +243,8 @@ export function useSettings() {
         maxHistoryInMemory,
         maxCompletedInMemory,
         maxFailedInMemory,
+        showChunkProgress,
+        primaryColor,
 
         // Métodos de carga
         loadDownloadSettings,
@@ -201,7 +258,9 @@ export function useSettings() {
         // Acciones
         selectDownloadFolder,
         toggleTheme,
-        updateThemeClass
+        updateThemeClass,
+        setPrimaryColor,
+        updatePrimaryColor
     };
 }
 

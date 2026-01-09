@@ -50,6 +50,7 @@
         :selected-downloads="selectedDownloads"
         :selected-history-downloads="selectedHistoryDownloads"
         :show-empty="true"
+        :show-chunk-progress="showChunkProgress"
         @clear-downloads="clearDownloads"
         @cancel-all-downloads="cancelAllDownloads"
         @confirm-all="confirmOverwriteAll"
@@ -151,14 +152,17 @@
       v-model:max-history-in-memory="maxHistoryInMemory"
       v-model:max-completed-in-memory="maxCompletedInMemory"
       v-model:max-failed-in-memory="maxFailedInMemory"
+      v-model:show-chunk-progress="showChunkProgress"
       :favorites-count="favorites.length"
       :last-update-date="formattedUpdateDate"
       :cleanup-stats="cleanupStats"
+      :primary-color="primaryColor"
       @close="showSettings = false"
       @save-settings="saveDownloadSettings"
       @select-folder="selectDownloadFolder"
       @clear-favorites="clearFavorites"
       @clean-history="handleCleanHistory"
+      @set-primary-color="setPrimaryColor"
     />
 
     <!-- Notificaciones de ConfirmaciÃ³n -->
@@ -213,10 +217,13 @@ const {
   maxHistoryInMemory,
   maxCompletedInMemory,
   maxFailedInMemory,
+  showChunkProgress,
+  primaryColor,
   initSettings,
   saveDownloadSettings,
   selectDownloadFolder,
-  toggleTheme
+  toggleTheme,
+  setPrimaryColor
 } = useSettings();
 
 const {
@@ -246,11 +253,30 @@ const {
   locationPath,
   isAtRoot,
   loadChildren,
-  navigateToNode,
-  goToRoot,
-  goBack,
+  navigateToNode: navigateToNodeOriginal,
+  goToRoot: goToRootOriginal,
+  goBack: goBackOriginal,
   initNavigation
 } = useNavigation();
+
+// Wrappers de navegación que ocultan los paneles
+const navigateToNode = async (node) => {
+  showingFavorites.value = false;
+  showingDownloads.value = false;
+  await navigateToNodeOriginal(node);
+};
+
+const goToRoot = async () => {
+  showingFavorites.value = false;
+  showingDownloads.value = false;
+  await goToRootOriginal();
+};
+
+const goBack = async () => {
+  showingFavorites.value = false;
+  showingDownloads.value = false;
+  await goBackOriginal();
+};
 
 const {
   searchTerm,

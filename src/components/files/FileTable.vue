@@ -21,7 +21,12 @@
       </div>
     </div>
     
-    <div class="table-container" ref="tableContainer" @scroll="handleScroll">
+    <div 
+      class="table-container" 
+      ref="tableContainer" 
+      @scroll="handleScroll"
+      :style="{ height: shouldVirtualize ? '600px' : 'auto', overflow: shouldVirtualize ? 'auto' : 'visible' }"
+    >
       <table>
         <thead>
           <tr>
@@ -83,16 +88,17 @@
             <th>Descargar</th>
           </tr>
         </thead>
-        <tbody>
+        <tbody :style="{ height: shouldVirtualize ? totalHeight : 'auto' }">
           <!-- Espaciador superior para filas no visibles -->
-          <tr v-if="visibleStart > 0" style="height: 0;">
+          <tr v-if="shouldVirtualize && visibleRange.start > 0" style="height: 0;">
             <td :colspan="columnCount" :style="{ height: topSpacerHeight + 'px', padding: 0, border: 'none' }"></td>
           </tr>
           
           <!-- Filas visibles -->
           <tr 
-            v-for="file in visibleFiles" 
+            v-for="file in visibleItems" 
             :key="file.id"
+            :data-virtual-index="file._virtualIndex"
             :data-index="file._virtualIndex"
           >
             <td class="checkbox-col" data-label="">
@@ -119,7 +125,7 @@
           </tr>
           
           <!-- Espaciador inferior para filas no visibles -->
-          <tr v-if="visibleEnd < files.length" style="height: 0;">
+          <tr v-if="shouldVirtualize && visibleRange.end < files.length" style="height: 0;">
             <td :colspan="columnCount" :style="{ height: bottomSpacerHeight + 'px', padding: 0, border: 'none' }"></td>
           </tr>
         </tbody>
@@ -129,7 +135,8 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue';
+import { ref, computed } from 'vue';
+import { useVirtualScroll } from '../../composables/useVirtualScroll';
 
 // Props
 const props = defineProps({
@@ -199,19 +206,6 @@ defineEmits([
 
 // Referencias
 const tableContainer = ref(null);
-const scrollTop = ref(0);
-const containerHeight = ref(0);
-const rowHeight = ref(50); // Altura estimada por fila (se ajusta dinámicamente)
-
-// Configuración de virtualización
-const ROW_HEIGHT_ESTIMATE = 50; // Altura estimada inicial por fila
-const MIN_ITEMS_FOR_VIRTUALIZATION = 50; // Solo virtualizar si hay más de 50 items
-
-// Computed: Determinar si usar virtualización
-const shouldVirtualize = computed(() => {
-  return props.enableVirtualization && 
-         props.files.length >= MIN_ITEMS_FOR_VIRTUALIZATION;
-});
 
 // Computed: Número de columnas (para colspan)
 const columnCount = computed(() => {
@@ -221,101 +215,23 @@ const columnCount = computed(() => {
   return count;
 });
 
-// Computed: Calcular filas visibles
-const visibleRange = computed(() => {
-  if (!shouldVirtualize.value) {
-    return { start: 0, end: props.files.length };
-  }
-
-  const start = Math.max(0, Math.floor(scrollTop.value / rowHeight.value) - props.overscan);
-  const end = Math.min(
-    props.files.length,
-    Math.ceil((scrollTop.value + containerHeight.value) / rowHeight.value) + props.overscan
-  );
-
-  return { start, end };
-});
-
-// Computed: Filas visibles con índice virtual
-const visibleFiles = computed(() => {
-  const { start, end } = visibleRange.value;
-  return props.files.slice(start, end).map((file, index) => ({
-    ...file,
-    _virtualIndex: start + index
-  }));
-});
-
-// Computed: Altura del espaciador superior
-const topSpacerHeight = computed(() => {
-  if (!shouldVirtualize.value) return 0;
-  return visibleRange.value.start * rowHeight.value;
-});
-
-// Computed: Altura del espaciador inferior
-const bottomSpacerHeight = computed(() => {
-  if (!shouldVirtualize.value) return 0;
-  const { end } = visibleRange.value;
-  return (props.files.length - end) * rowHeight.value;
-});
-
-// Computed: Índices visibles (para debugging)
-const visibleStart = computed(() => visibleRange.value.start);
-const visibleEnd = computed(() => visibleRange.value.end);
-
-// Manejar scroll
-const handleScroll = () => {
-  if (!tableContainer.value) return;
-  scrollTop.value = tableContainer.value.scrollTop;
-};
-
-// Medir altura real de las filas
-const measureRowHeight = () => {
-  if (!tableContainer.value || !shouldVirtualize.value) return;
-  
-  nextTick(() => {
-    const tbody = tableContainer.value?.querySelector('tbody');
-    if (!tbody) return;
-    
-    const firstRow = tbody.querySelector('tr[data-index]');
-    if (firstRow) {
-      const height = firstRow.offsetHeight;
-      if (height > 0 && height !== rowHeight.value) {
-        rowHeight.value = height;
-      }
-    }
-  });
-};
-
-// Observar cambios en el tamaño del contenedor
-let resizeObserver = null;
-
-onMounted(() => {
-  if (!tableContainer.value) return;
-  
-  // Medir altura inicial
-  containerHeight.value = tableContainer.value.clientHeight;
-  measureRowHeight();
-  
-  // Observar cambios de tamaño
-  if (window.ResizeObserver) {
-    resizeObserver = new ResizeObserver((entries) => {
-      for (const entry of entries) {
-        containerHeight.value = entry.contentRect.height;
-      }
-    });
-    resizeObserver.observe(tableContainer.value);
-  }
-  
-  // Medir altura de filas cuando cambien los archivos
-  watch(() => props.files.length, () => {
-    measureRowHeight();
-  });
-});
-
-onUnmounted(() => {
-  if (resizeObserver) {
-    resizeObserver.disconnect();
-  }
+// Virtual Scroll
+const {
+  shouldVirtualize,
+  visibleRange,
+  visibleItems,
+  topSpacerHeight,
+  bottomSpacerHeight,
+  totalHeight,
+  handleScroll,
+  measureRowHeight
+} = useVirtualScroll({
+  items: computed(() => props.files),
+  containerRef: tableContainer,
+  itemHeight: 50, // Altura estimada por fila
+  overscan: props.overscan || 5,
+  minItemsToVirtualize: 50, // Solo virtualizar si hay más de 50 items
+  enabled: props.enableVirtualization !== false
 });
 
 // Métodos

@@ -9,16 +9,17 @@ const { ipcMain, dialog } = require('electron');
 const database = require('./database');
 const downloadManager = require('./downloadManager');
 const queueDatabase = require('./queueDatabase');
+const { serviceManager } = require('./services');
 const { 
     logger, 
     readJSONFile, 
     writeJSONFile,
-    validateDownloadParams,
-    validateSearchTerm,
+    validateDownloadParams: validateDownloadParamsLegacy,
+    validateSearchTerm: validateSearchTermLegacy,
     validateNodeId,
-    validateDownloadId,
+    validateDownloadId: validateDownloadIdLegacy,
     validateConfigFilename,
-    validateDownloadFolderParams
+    validateDownloadFolderParams: validateDownloadFolderParamsLegacy
 } = require('./utils');
 
 const log = logger.child('IPC');
@@ -41,27 +42,93 @@ function createHandler(channel, handler, options = {}) {
 }
 
 /**
+ * Obtiene servicios de forma segura (con fallback si no están inicializados)
+ */
+function getServices() {
+    const downloadService = serviceManager.initialized ? serviceManager.getDownloadService() : null;
+    const searchService = serviceManager.initialized ? serviceManager.getSearchService() : null;
+    const queueService = serviceManager.initialized ? serviceManager.getQueueService() : null;
+    const fileService = serviceManager.initialized ? serviceManager.getFileService() : null;
+    
+    return { downloadService, searchService, queueService, fileService };
+}
+
+/**
  * Registra todos los handlers IPC
  */
 function registerHandlers(mainWindow) {
     log.info('Registrando handlers IPC...');
+    
+    // Asegurar que los servicios estén inicializados
+    if (!serviceManager.initialized) {
+        log.warn('ServiceManager no está inicializado, usando validaciones legacy');
+    }
 
     // =====================
     // BASE DE DATOS
     // =====================
 
-    ipcMain.handle('search-db', createHandler('search-db', (event, searchTerm) => {
-        // Validar término de búsqueda
-        const validation = validateSearchTerm(searchTerm);
-        if (!validation.valid) {
-            // Retornar array vacío para búsquedas muy cortas (no es error)
-            if (searchTerm && searchTerm.trim().length < 2) {
-                return { success: true, data: [] };
-            }
-            return { success: false, error: validation.error };
-        }
+    ipcMain.handle('search-db', createHandler('search-db', async (event, searchTerm, options = {}) => {
+        const { searchService } = getServices();
         
-        return database.search(validation.data);
+        // Validar y normalizar término de búsqueda usando SearchService si está disponible
+        let validation;
+        if (searchService) {
+            validation = searchService.validateAndNormalizeSearchTerm(searchTerm);
+            if (!validation.valid) {
+                // Retornar array vacío para búsquedas muy cortas (no es error)
+                if (searchTerm && searchTerm.trim().length < 2) {
+                    return { success: true, data: [], total: 0 };
+                }
+                return { success: false, error: validation.error };
+            }
+            
+            // Normalizar opciones usando SearchService
+            const normalizedOptions = searchService.normalizeSearchOptions(options);
+            
+            // Determinar estrategia de búsqueda
+            const strategy = searchService.determineSearchStrategy(validation.data, normalizedOptions);
+            
+            // Preparar término para FTS si es necesario
+            let searchTermToUse = validation.data;
+            if (strategy === 'fts') {
+                searchTermToUse = searchService.prepareFTSTerm(validation.data, normalizedOptions);
+            }
+            
+            // Ejecutar búsqueda (database.search es síncrono, pero lo mantenemos como async para consistencia)
+            const result = database.search(searchTermToUse, normalizedOptions);
+            
+            // Calcular paginación si es necesario
+            if (result.success && result.total !== undefined) {
+                const pagination = searchService.calculatePagination(
+                    result.total, 
+                    normalizedOptions.limit, 
+                    normalizedOptions.offset
+                );
+                return { ...result, pagination };
+            }
+            
+            return result;
+        } else {
+            // Fallback: usar validación legacy
+            validation = validateSearchTermLegacy(searchTerm);
+            if (!validation.valid) {
+                if (searchTerm && searchTerm.trim().length < 2) {
+                    return { success: true, data: [], total: 0 };
+                }
+                return { success: false, error: validation.error };
+            }
+            
+            const searchOptions = {
+                limit: Math.min(Math.max(parseInt(options.limit) || 500, 1), 1000),
+                offset: Math.max(parseInt(options.offset) || 0, 0),
+                usePrefix: options.usePrefix !== false,
+                usePhrase: options.usePhrase === true,
+                useOR: options.useOR === true
+            };
+            
+            return database.search(validation.data, searchOptions);
+        }
     }));
 
     ipcMain.handle('get-children', createHandler('get-children', (event, parentId) => {
@@ -103,8 +170,17 @@ function registerHandlers(mainWindow) {
     // =====================
 
     ipcMain.handle('download-file', createHandler('download-file', async (event, params) => {
-
-        const validation = validateDownloadParams(params);
+        const { downloadService, queueService } = getServices();
+        
+        // Validar parámetros usando DownloadService si está disponible
+        let validation;
+        if (downloadService) {
+            validation = downloadService.validateDownloadParams(params);
+        } else {
+            // Fallback: usar validación legacy
+            validation = validateDownloadParamsLegacy(params);
+        }
+        
         if (!validation.valid) {
             log.error('Parámetros de descarga inválidos:', validation.error);
             return { success: false, error: validation.error };
@@ -118,8 +194,22 @@ function registerHandlers(mainWindow) {
         log.info(`Stats:`, downloadManager.getStats());
         log.info(`============================`);
 
-        // Verificar duplicados
-        if (downloadManager.isDownloadActive(validatedParams.id)) {
+        // Verificar duplicados usando DownloadService si está disponible
+        const existingDownloads = Array.from(downloadManager.activeDownloads.keys())
+            .concat(Array.from(downloadManager.chunkedDownloads.keys()))
+            .concat(downloadManager.downloadQueue.map(d => d.id));
+        
+        let isDuplicate = false;
+        if (downloadService && existingDownloads.length > 0) {
+            const duplicateCheck = downloadService.isDuplicate(
+                validatedParams, 
+                existingDownloads.map(id => ({ id }))
+            );
+            isDuplicate = duplicateCheck.isDuplicate;
+        }
+        
+        // Verificar si está activa o en cola
+        if (downloadManager.isDownloadActive(validatedParams.id) || isDuplicate) {
             log.warn(`Descarga ${validatedParams.id} ya está activa o en cola`);
             return {
                 success: false,
@@ -128,8 +218,38 @@ function registerHandlers(mainWindow) {
             };
         }
 
-        // Si no hay slots disponibles, tirar a la puta cola
-        if (!downloadManager.canStartDownload()) {
+        // Verificar disponibilidad usando QueueService si está disponible
+        const stats = downloadManager.getStats();
+        let canStart = false;
+        let shouldQueue = false;
+        let queuePosition = 0;
+        
+        if (queueService) {
+            const availability = queueService.checkAvailability(
+                stats.activeSimple + stats.activeChunked,
+                stats.queuedInMemory
+            );
+            canStart = availability.canStart;
+            shouldQueue = availability.shouldQueue;
+            
+            if (shouldQueue) {
+                // Calcular posición en cola usando QueueService
+                const queue = downloadManager.downloadQueue;
+                queuePosition = queueService.calculateQueuePosition(validatedParams, queue) + 1;
+            }
+        } else {
+            // Fallback: usar método directo
+            canStart = downloadManager.canStartDownload();
+            shouldQueue = !canStart;
+        }
+
+        // Si no hay slots disponibles, agregar a la cola
+        if (!canStart && shouldQueue) {
+            // Calcular prioridad usando DownloadService si está disponible
+            if (downloadService && !validatedParams.priority) {
+                validatedParams.priority = downloadService.calculatePriority(validatedParams);
+            }
+            
             const position = downloadManager.addToQueueWithPersist(validatedParams);
 
             if (position === -1) {
@@ -202,8 +322,17 @@ function registerHandlers(mainWindow) {
     }));
 
     ipcMain.handle('pause-download', createHandler('pause-download', async (event, downloadId) => {
-        // Validar el ID de descarga
-        const validation = validateDownloadId(downloadId);
+        const { downloadService } = getServices();
+        
+        // Validar ID usando DownloadService si está disponible
+        let validation;
+        if (downloadService) {
+            // DownloadService no tiene validateDownloadId específico, usar legacy por ahora
+            validation = validateDownloadIdLegacy(downloadId);
+        } else {
+            validation = validateDownloadIdLegacy(downloadId);
+        }
+        
         if (!validation.valid) {
             return { success: false, error: validation.error };
         }
@@ -212,8 +341,10 @@ function registerHandlers(mainWindow) {
     }));
 
     ipcMain.handle('resume-download', createHandler('resume-download', async (event, downloadId) => {
-        // Validar el ID de descarga
-        const validation = validateDownloadId(downloadId);
+        const { downloadService, queueService } = getServices();
+        
+        // Validar ID de descarga
+        const validation = validateDownloadIdLegacy(downloadId);
         if (!validation.valid) {
             return { success: false, error: validation.error };
         }
@@ -269,8 +400,8 @@ function registerHandlers(mainWindow) {
     }));
 
     ipcMain.handle('cancel-download', createHandler('cancel-download', async (event, downloadId) => {
-        // Validar el ID de descarga
-        const validation = validateDownloadId(downloadId);
+        // Validar ID de descarga
+        const validation = validateDownloadIdLegacy(downloadId);
         if (!validation.valid) {
             return { success: false, error: validation.error };
         }
@@ -280,6 +411,74 @@ function registerHandlers(mainWindow) {
 
     ipcMain.handle('get-download-stats', createHandler('get-download-stats', () => {
         return downloadManager.getStats();
+    }));
+
+    /**
+     * Obtiene la estimación de tiempo de cola
+     * Incluye tiempo total y tiempo hasta que una descarga específica comience
+     */
+    ipcMain.handle('get-queue-time-estimate', createHandler('get-queue-time-estimate', async (event, downloadId = null) => {
+        try {
+            const { queueService } = getServices();
+            const stats = downloadManager.getStats();
+            
+            if (!queueService) {
+                return {
+                    success: false,
+                    error: 'QueueService no disponible'
+                };
+            }
+
+            // Si no hay descargas en cola, retornar estimación vacía
+            if (!stats.queuedInMemory || stats.queuedInMemory === 0) {
+                return {
+                    success: true,
+                    queueTimeEstimate: {
+                        totalEstimatedSeconds: 0,
+                        totalEstimatedMinutes: 0,
+                        totalEstimatedHours: 0,
+                        totalDownloads: 0,
+                        totalBytes: 0,
+                        canStartImmediately: true
+                    }
+                };
+            }
+
+            // Si se solicita estimación para una descarga específica
+            if (downloadId !== null) {
+                const totalActive = stats.activeSimple + stats.activeChunked;
+                const activeSpeeds = downloadManager.getActiveDownloadsSpeed();
+                const averageSpeedBytesPerSec = queueService.calculateAverageSpeed(activeSpeeds);
+                
+                const timeUntilStart = queueService.estimateTimeUntilStart(
+                    downloadId,
+                    downloadManager.downloadQueue || [],
+                    totalActive,
+                    averageSpeedBytesPerSec
+                );
+
+                return {
+                    success: true,
+                    downloadId,
+                    timeUntilStart,
+                    queueTimeEstimate: stats.queueTimeEstimate || null
+                };
+            }
+
+            // Retornar solo estimación total de cola (ya incluida en stats)
+            return {
+                success: true,
+                queueTimeEstimate: stats.queueTimeEstimate || null,
+                queueStats: stats.queueStats || null
+            };
+
+        } catch (error) {
+            log.error('Error obteniendo estimación de tiempo de cola:', error);
+            return {
+                success: false,
+                error: error.message
+            };
+        }
     }));
 
     ipcMain.handle('clean-history', createHandler('clean-history', async (event, daysOld = 30) => {
@@ -303,7 +502,17 @@ function registerHandlers(mainWindow) {
     }));
 
     ipcMain.handle('download-folder', createHandler('download-folder', async (event, params) => {
-        const validation = validateDownloadFolderParams(params);
+        const { downloadService, queueService } = getServices();
+        
+        // Validar parámetros de descarga de carpeta usando DownloadService si está disponible
+        let validation;
+        if (downloadService) {
+            validation = downloadService.validateDownloadFolderParams(params);
+        } else {
+            // Fallback: usar validación legacy
+            validation = validateDownloadFolderParamsLegacy(params);
+        }
+        
         if (!validation.valid) {
             log.error('Parámetros de descarga de carpeta inválidos:', validation.error);
             return { success: false, error: validation.error };
@@ -327,8 +536,26 @@ function registerHandlers(mainWindow) {
 
             const files = filesResult.data || [];
             
-            if (files.length === 0) {
-                return { success: false, error: 'La carpeta no contiene archivos' };
+            // Validar si la carpeta puede ser descargada usando DownloadService si está disponible
+            if (downloadService) {
+                const stats = downloadManager.getStats();
+                const canDownload = downloadService.canDownloadFolder(validatedParams, files.length, stats);
+                
+                if (!canDownload.canDownload) {
+                    log.warn(`No se puede descargar carpeta: ${canDownload.reason}`);
+                    return { 
+                        success: false, 
+                        error: canDownload.reason,
+                        fileCount: files.length,
+                        maxFilesPerFolder: canDownload.maxFilesPerFolder,
+                        availableQueueSlots: canDownload.availableQueueSlots
+                    };
+                }
+            } else {
+                // Fallback: validación básica
+                if (files.length === 0) {
+                    return { success: false, error: 'La carpeta no contiene archivos' };
+                }
             }
 
             log.info(`Encontrados ${files.length} archivos en la carpeta`);
@@ -337,26 +564,76 @@ function registerHandlers(mainWindow) {
             const folderInfo = database.getNodeInfo(validatedParams.folderId);
             const folderTitle = folderInfo.success && folderInfo.data ? folderInfo.data.title : `Carpeta ${validatedParams.folderId}`;
 
+            // Calcular estadísticas usando DownloadService si está disponible
+            let folderStats = null;
+            if (downloadService) {
+                const existingDownloads = Array.from(downloadManager.activeDownloads.keys())
+                    .concat(Array.from(downloadManager.chunkedDownloads.keys()))
+                    .concat(downloadManager.downloadQueue.map(d => d.id))
+                    .map(id => ({ id }));
+                
+                folderStats = downloadService.calculateFolderDownloadStats(
+                    validatedParams,
+                    files,
+                    existingDownloads
+                );
+                
+                log.info(`Estadísticas de carpeta:`, folderStats);
+            }
+
             // Agregar cada archivo a la cola de descargas
             let addedCount = 0;
             let skippedCount = 0;
             const errors = [];
 
             for (const file of files) {
-                // Verificar si ya está en descarga
-                if (downloadManager.isDownloadActive(file.id)) {
+                // Preparar parámetros de descarga usando DownloadService si está disponible
+                let downloadParams;
+                
+                if (downloadService) {
+                    const prepared = downloadService.prepareFileDownloadParams(validatedParams, file);
+                    
+                    if (!prepared.success) {
+                        errors.push({
+                            fileId: file.id,
+                            fileName: file.title,
+                            error: prepared.error
+                        });
+                        skippedCount++;
+                        continue;
+                    }
+                    
+                    downloadParams = prepared.params;
+                } else {
+                    // Fallback: preparar parámetros manualmente
+                    downloadParams = {
+                        id: file.id,
+                        title: file.title,
+                        downloadPath: validatedParams.downloadPath,
+                        preserveStructure: validatedParams.preserveStructure !== false, // Por defecto true
+                        forceOverwrite: validatedParams.forceOverwrite || false
+                    };
+                }
+
+                // Verificar si ya está en descarga o es duplicado
+                if (downloadManager.isDownloadActive(downloadParams.id)) {
                     skippedCount++;
                     continue;
                 }
 
-                // Preparar parámetros de descarga
-                const downloadParams = {
-                    id: file.id,
-                    title: file.title,
-                    downloadPath: validatedParams.downloadPath,
-                    preserveStructure: validatedParams.preserveStructure !== false, // Por defecto true
-                    forceOverwrite: validatedParams.forceOverwrite || false
-                };
+                // Verificar duplicados usando DownloadService si está disponible
+                if (downloadService) {
+                    const existingDownloads = Array.from(downloadManager.activeDownloads.keys())
+                        .concat(Array.from(downloadManager.chunkedDownloads.keys()))
+                        .concat(downloadManager.downloadQueue.map(d => d.id))
+                        .map(id => ({ id }));
+                    
+                    const duplicateCheck = downloadService.isDuplicate(downloadParams, existingDownloads);
+                    if (duplicateCheck.isDuplicate) {
+                        skippedCount++;
+                        continue;
+                    }
+                }
 
                 // Agregar a la cola (siempre a la cola para evitar saturar)
                 const position = downloadManager.addToQueueWithPersist(downloadParams);
@@ -383,7 +660,8 @@ function registerHandlers(mainWindow) {
 
             log.info(`Descarga de carpeta iniciada: ${addedCount} archivos agregados, ${skippedCount} omitidos`);
 
-            return {
+            // Incluir estadísticas si están disponibles
+            const result = {
                 success: true,
                 totalFiles: files.length,
                 added: addedCount,
@@ -391,6 +669,19 @@ function registerHandlers(mainWindow) {
                 folderTitle: folderTitle.replace(/\/$/, ''),
                 errors: errors.length > 0 ? errors : undefined
             };
+
+            // Agregar estadísticas si están disponibles
+            if (folderStats) {
+                result.stats = {
+                    validFiles: folderStats.validFiles,
+                    duplicateFiles: folderStats.duplicateFiles,
+                    newDownloads: folderStats.newDownloads,
+                    totalSize: folderStats.totalSize,
+                    averageSize: folderStats.averageSize
+                };
+            }
+
+            return result;
 
         } catch (error) {
             log.error('Error al descargar carpeta:', error);

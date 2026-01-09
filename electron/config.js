@@ -33,11 +33,59 @@ module.exports = {
     },
 
     // =====================
+    // CIRCUIT BREAKER
+    // =====================
+    circuitBreaker: {
+        /** Habilitar Circuit Breaker para errores de red */
+        enabled: true,
+
+        /** Configuración para descargas simples */
+        download: {
+            /** Número de fallos antes de abrir el circuit */
+            failureThreshold: 5,
+            /** Número de éxitos para cerrar desde HALF_OPEN */
+            successThreshold: 2,
+            /** Tiempo en OPEN antes de intentar HALF_OPEN (ms) */
+            timeout: 60000, // 60 segundos
+            /** Tiempo para resetear contadores en CLOSED (ms) */
+            resetTimeout: 60000, // 60 segundos
+        },
+
+        /** Configuración para chunks */
+        chunk: {
+            /** Número de fallos antes de abrir el circuit */
+            failureThreshold: 10, // Más tolerante porque hay muchos chunks
+            /** Número de éxitos para cerrar desde HALF_OPEN */
+            successThreshold: 3,
+            /** Tiempo en OPEN antes de intentar HALF_OPEN (ms) */
+            timeout: 30000, // 30 segundos (más corto para chunks)
+            /** Tiempo para resetear contadores en CLOSED (ms) */
+            resetTimeout: 30000,
+        },
+
+        /** Configuración global por dominio/host */
+        perHost: {
+            /** Habilitar circuit breakers por host */
+            enabled: true,
+            /** Número de fallos antes de abrir el circuit por host */
+            failureThreshold: 10,
+            /** Tiempo en OPEN antes de intentar HALF_OPEN (ms) */
+            timeout: 120000, // 2 minutos para hosts
+        },
+    },
+
+    // =====================
     // CONFIGURACIÓN DE DESCARGAS
     // =====================
     downloads: {
         /** Máximo de descargas simultáneas */
         maxConcurrent: 3,
+        
+        /** Máximo de archivos permitidos en una descarga de carpeta */
+        maxFilesPerFolder: 1000,
+        
+        /** Máximo de descargas permitidas en la cola */
+        maxQueueSize: 1000,
         
         /** Tiempo para considerar una descarga "zombie" en ms (5 minutos) */
         staleTimeout: 300000,
@@ -56,6 +104,30 @@ module.exports = {
         
         /** Intervalo para verificar lock en ms */
         lockCheckInterval: 25,
+
+        /** Tamaño del buffer de escritura por defecto (1MB) */
+        writeBufferSize: 1024 * 1024,
+
+        /** Tamaño mínimo del buffer de escritura (256KB) */
+        minWriteBufferSize: 256 * 1024,
+
+        /** Tamaño máximo del buffer de escritura (16MB) */
+        maxWriteBufferSize: 16 * 1024 * 1024,
+
+        /** Habilitar ajuste dinámico de buffer según backpressure */
+        adaptiveBufferSize: true,
+
+        /** Umbral de backpressure para reducir tamaño de buffer (eventos por segundo) */
+        backpressureEventThreshold: 10,
+
+        /** Tiempo máximo en backpressure antes de reducir buffer (ms) */
+        maxBackpressureDuration: 5000,
+
+        /** Factor de reducción de buffer cuando hay backpressure (0.5 = reducir a la mitad) */
+        bufferReductionFactor: 0.75,
+
+        /** Factor de aumento de buffer cuando no hay backpressure (1.25 = aumentar 25%) */
+        bufferIncreaseFactor: 1.25,
 
         // =====================
         // DESCARGAS FRAGMENTADAS (CHUNKED)
@@ -159,6 +231,12 @@ module.exports = {
             dbBatchInterval: 2000,
 
             /**
+             * Tamaño del buffer de escritura para chunks (1MB por defecto)
+             * Se ajusta automáticamente según el tamaño del chunk
+             */
+            chunkWriteBufferSize: 1024 * 1024,
+
+            /**
              * Buffer para fusión de chunks (16MB por defecto, reducido para evitar bloqueo)
              */
             mergeBufferSize: 16 * 1024 * 1024,
@@ -184,6 +262,13 @@ module.exports = {
              * Umbral de backpressure para reducir concurrencia
              */
             backpressureThreshold: 5,
+
+            /**
+             * Usar Worker Thread para merge de chunks
+             * Evita bloquear el event loop del main thread
+             * Default: true
+             */
+            useWorkerThread: true,
         },
     },
 

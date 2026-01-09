@@ -29,6 +29,9 @@
     "appId": "com.user.myrientapp",
     "productName": "Myrient Downloader",
     "asar": true,
+    "asarUnpack": [
+      "electron/workers/**/*"
+    ],
     "directories": {
       "output": "dist-electron"
     },

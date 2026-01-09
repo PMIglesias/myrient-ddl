@@ -8,6 +8,12 @@
   background-color: #242424;
   
   /* ========================================
+     COLOR PRIMARIO (por defecto: verde)
+     ======================================== */
+  --primary-color: #4CAF50;
+  --primary-color-hover: #45a049;
+  
+  /* ========================================
      SISTEMA DE ESPACIADO
      ======================================== */
   --spacing-xs: 4px;
@@ -34,6 +40,17 @@
   --shadow-xl: 0 8px 16px rgba(0, 0, 0, 0.4);
 }
 
+/* Modo claro - cambiar color base del root */
+body.light-mode,
+html.light-mode {
+  color: #333 !important;
+}
+
+body.light-mode :root,
+html.light-mode :root {
+  color: #333;
+}
+
 body, html, #app {
   margin: 0;
   padding: 0;
@@ -48,6 +65,117 @@ body, html, #app {
   height: 100%;
   padding: 0;
   box-sizing: border-box;
+  background-color: #1e1e1e;
+  color: rgba(255, 255, 255, 0.87);
+}
+
+/* Modo claro - estilos base */
+.light-mode #container,
+body.light-mode #container {
+  background-color: #f8f7f4;
+  color: #2c2c2c;
+}
+
+body.light-mode,
+html.light-mode {
+  background-color: #f8f7f4;
+  color: #2c2c2c;
+}
+
+/* Reglas generales para modo claro - sobrescribir colores hardcodeados */
+.light-mode,
+body.light-mode {
+  color: #333;
+}
+
+.light-mode *,
+body.light-mode * {
+  /* Cambiar textos blancos a oscuros en modo claro */
+}
+
+.light-mode h1,
+.light-mode h2,
+.light-mode h3,
+.light-mode h4,
+.light-mode h5,
+.light-mode h6,
+body.light-mode h1,
+body.light-mode h2,
+body.light-mode h3,
+body.light-mode h4,
+body.light-mode h5,
+body.light-mode h6 {
+  color: #333;
+}
+
+.light-mode p,
+body.light-mode p {
+  color: #555;
+}
+
+.light-mode span,
+body.light-mode span {
+  color: inherit;
+}
+
+/* Asegurar que elementos con texto blanco cambien en modo claro */
+.light-mode .status-message,
+body.light-mode .status-message {
+  color: #666;
+}
+
+.light-mode .files-header,
+body.light-mode .files-header {
+  background-color: #f8f7f4;
+  color: #2c2c2c;
+}
+
+.light-mode .files-header h2,
+.light-mode .files-header h3,
+body.light-mode .files-header h2,
+body.light-mode .files-header h3 {
+  color: #333;
+}
+
+/* Asegurar que en modo oscuro (sin light-mode) los elementos tengan color claro */
+#container:not(.light-mode),
+body:not(.light-mode) #container {
+  color: rgba(255, 255, 255, 0.87);
+}
+
+#container:not(.light-mode) *,
+body:not(.light-mode) #container * {
+  /* Heredar color del contenedor en modo oscuro */
+}
+
+/* Asegurar que elementos específicos tengan color correcto en modo oscuro */
+#container:not(.light-mode) .status-message,
+body:not(.light-mode) #container .status-message {
+  color: #888;
+}
+
+#container:not(.light-mode) .empty-state,
+body:not(.light-mode) #container .empty-state {
+  color: #888;
+}
+
+#container:not(.light-mode) .empty-state h3,
+body:not(.light-mode) #container .empty-state h3 {
+  color: #aaa;
+}
+
+#container:not(.light-mode) .empty-state p,
+body:not(.light-mode) #container .empty-state p {
+  color: #888;
+}
+
+/* Regla general: asegurar que el contenedor tenga el color base correcto */
+#container:not(.light-mode) {
+  color: rgba(255, 255, 255, 0.87);
+}
+
+#container.light-mode {
+  color: #333;
 }
 
 /* Barra de Título Personalizada */
@@ -64,6 +192,12 @@ body, html, #app {
   box-sizing: border-box;
 }
 
+.light-mode .titlebar,
+body.light-mode .titlebar {
+  background: linear-gradient(135deg, #e8e7e4 0%, #f0efe8 100%);
+  border-bottom: 1px solid #d4d2cc;
+}
+
 .titlebar-content {
   flex-grow: 1;
   display: flex;
@@ -75,7 +209,7 @@ body, html, #app {
 .back-btn {
   background: transparent;
   border: none;
-  color: #4CAF50;
+  color: var(--primary-color);
   cursor: pointer;
   font-size: 20px;
   padding: 4px 8px;
@@ -90,14 +224,14 @@ body, html, #app {
 }
 
 .back-btn:hover {
-  background-color: rgba(76, 175, 80, 0.2);
+  background-color: color-mix(in srgb, var(--primary-color) 20%, transparent);
   transform: translateX(-2px);
 }
 
 .back-btn:focus {
-  outline: 2px solid #4CAF50;
+  outline: 2px solid var(--primary-color);
   outline-offset: 2px;
-  background-color: rgba(76, 175, 80, 0.25);
+  background-color: color-mix(in srgb, var(--primary-color) 25%, transparent);
 }
 
 .back-btn:active {
@@ -105,7 +239,7 @@ body, html, #app {
 }
 
 .titlebar-title {
-  color: #4CAF50;
+  color: var(--primary-color);
   font-weight: 600;
   font-size: 14px;
   letter-spacing: 0.5px;
@@ -120,6 +254,11 @@ body, html, #app {
   overflow: hidden;
   text-overflow: ellipsis;
   flex-shrink: 1;
+}
+
+.light-mode .location-path,
+body.light-mode .location-path {
+  color: #666;
 }
 
 .titlebar-controls {
@@ -140,16 +279,21 @@ body, html, #app {
   position: relative;
 }
 
+.light-mode .titlebar-btn,
+body.light-mode .titlebar-btn {
+  color: #666;
+}
+
 .titlebar-btn:hover {
-  background-color: rgba(76, 175, 80, 0.1);
-  color: #4CAF50;
+  background-color: color-mix(in srgb, var(--primary-color) 10%, transparent);
+  color: var(--primary-color);
   transform: scale(1.05);
 }
 
 .titlebar-btn:focus {
-  outline: 2px solid #4CAF50;
+  outline: 2px solid var(--primary-color);
   outline-offset: 2px;
-  background-color: rgba(76, 175, 80, 0.15);
+  background-color: color-mix(in srgb, var(--primary-color) 15%, transparent);
 }
 
 .titlebar-btn:active {
@@ -161,9 +305,9 @@ body, html, #app {
   align-items: center;
   gap: 8px;
   padding: 6px 12px;
-  background-color: rgba(76, 175, 80, 0.1);
+  background-color: color-mix(in srgb, var(--primary-color) 10%, transparent);
   border-radius: 4px;
-  color: #4CAF50;
+  color: var(--primary-color);
   font-size: 12px;
   font-weight: 500;
   margin-right: 5px;
@@ -235,6 +379,11 @@ body, html, #app {
   border-bottom: 1px solid #444;
 }
 
+.light-mode #header,
+body.light-mode #header {
+  border-bottom: 1px solid #ddd;
+}
+
 .header-top {
   display: flex;
   justify-content: space-between;
@@ -246,7 +395,7 @@ body, html, #app {
 
 #header h1 {
   margin: 0;
-  color: #4CAF50;
+  color: var(--primary-color);
 }
 
 .header-buttons {
@@ -258,8 +407,8 @@ body, html, #app {
 .favorites-btn,
 .downloads-btn {
   background: transparent;
-  border: 2px solid #4CAF50;
-  color: #4CAF50;
+  border: 2px solid var(--primary-color);
+  color: var(--primary-color);
   padding: 8px 16px;
   border-radius: var(--radius-md);
   cursor: pointer;
@@ -272,7 +421,7 @@ body, html, #app {
 
 .favorites-btn:hover,
 .downloads-btn:hover {
-  background: #4CAF50;
+  background: var(--primary-color);
   color: white;
   transform: translateY(-1px);
   box-shadow: var(--shadow-sm);
@@ -280,9 +429,9 @@ body, html, #app {
 
 .favorites-btn:focus,
 .downloads-btn:focus {
-  outline: 2px solid #4CAF50;
+  outline: 2px solid var(--primary-color);
   outline-offset: 2px;
-  box-shadow: 0 0 0 3px rgba(76, 175, 80, 0.3);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary-color) 30%, transparent);
 }
 
 .favorites-btn:active,
@@ -293,7 +442,7 @@ body, html, #app {
 
 .favorites-btn.active,
 .downloads-btn.active {
-  background: #4CAF50;
+  background: var(--primary-color);
   color: white;
 }
 
@@ -317,24 +466,29 @@ body, html, #app {
 }
 
 .breadcrumb-btn:hover {
-  color: #4CAF50;
-  background-color: rgba(76, 175, 80, 0.1);
+  color: var(--primary-color);
+  background-color: color-mix(in srgb, var(--primary-color) 10%, transparent);
 }
 
 .breadcrumb-btn:focus {
-  outline: 2px solid #4CAF50;
+  outline: 2px solid var(--primary-color);
   outline-offset: 2px;
-  color: #4CAF50;
+  color: var(--primary-color);
 }
 
 .breadcrumb-btn.active {
-  color: #4CAF50;
+  color: var(--primary-color);
   font-weight: bold;
-  background-color: rgba(76, 175, 80, 0.15);
+  background-color: color-mix(in srgb, var(--primary-color) 15%, transparent);
 }
 
 .breadcrumb-separator {
   color: #666;
+}
+
+.light-mode .breadcrumb-separator,
+body.light-mode .breadcrumb-separator {
+  color: #999;
 }
 
 /* Contenedor de Búsqueda */
@@ -354,17 +508,24 @@ body, html, #app {
   transition: all 0.2s ease;
 }
 
+.light-mode #search-input,
+body.light-mode #search-input {
+  border: 1px solid #d4d2cc;
+  background-color: #faf9f6;
+  color: #2c2c2c;
+}
+
 #search-input:focus {
-  outline: 2px solid #4CAF50;
+  outline: 2px solid var(--primary-color);
   outline-offset: -2px;
-  border-color: #4CAF50;
-  box-shadow: 0 0 0 3px rgba(76, 175, 80, 0.2);
+  border-color: var(--primary-color);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary-color) 20%, transparent);
 }
 
 #search-container button {
   padding: 10px 20px;
-  border: 1px solid #4CAF50;
-  background-color: #4CAF50;
+  border: 1px solid var(--primary-color);
+  background-color: var(--primary-color);
   color: white;
   cursor: pointer;
   border-radius: 0 4px 4px 0;
@@ -373,15 +534,15 @@ body, html, #app {
 }
 
 #search-container button:hover {
-  background-color: #45a049;
+  background-color: var(--primary-color-hover);
   transform: translateY(-1px);
   box-shadow: var(--shadow-sm);
 }
 
 #search-container button:focus {
-  outline: 2px solid #4CAF50;
+  outline: 2px solid var(--primary-color);
   outline-offset: 2px;
-  box-shadow: 0 0 0 3px rgba(76, 175, 80, 0.3);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary-color) 30%, transparent);
 }
 
 #search-container button:active {
@@ -406,6 +567,11 @@ body, html, #app {
   scrollbar-color: #555 #242424;
 }
 
+.light-mode #content-container,
+body.light-mode #content-container {
+  scrollbar-color: #c4c2bc #f8f7f4;
+}
+
 #content-container::-webkit-scrollbar {
   width: 12px;
 }
@@ -424,6 +590,21 @@ body, html, #app {
   background: #666;
 }
 
+.light-mode #content-container::-webkit-scrollbar-track,
+body.light-mode #content-container::-webkit-scrollbar-track {
+  background: #f8f7f4;
+}
+
+.light-mode #content-container::-webkit-scrollbar-thumb,
+body.light-mode #content-container::-webkit-scrollbar-thumb {
+  background: #bbb;
+}
+
+.light-mode #content-container::-webkit-scrollbar-thumb:hover,
+body.light-mode #content-container::-webkit-scrollbar-thumb:hover {
+  background: #999;
+}
+
 /* Cuando hay una tabla, el scroll del contenedor solo afecta al contenido fuera de la tabla */
 /* La tabla maneja su propio scroll interno para la virtualización */
 
@@ -439,7 +620,7 @@ body, html, #app {
 }
 
 #folders-section h2, #favorites-section h2, #downloads-section h2 {
-  color: #4CAF50;
+  color: var(--primary-color);
   margin-bottom: var(--spacing-md);
 }
 
@@ -460,7 +641,7 @@ body, html, #app {
   padding: var(--spacing-lg) var(--spacing-md);
   background-color: #3a3a3a;
   color: #fff;
-  border: 2px solid #4CAF50;
+  border: 2px solid var(--primary-color);
   border-radius: var(--radius-lg);
   cursor: pointer;
   font-size: 16px;
@@ -474,16 +655,23 @@ body, html, #app {
   position: relative;
 }
 
+.light-mode .folder-btn,
+body.light-mode .folder-btn {
+  background-color: #faf9f6;
+  color: #2c2c2c;
+  border: 2px solid var(--primary-color);
+}
+
 .folder-btn:hover {
-  background-color: #4CAF50;
+  background-color: var(--primary-color);
   transform: translateY(-2px);
   box-shadow: var(--shadow-md);
 }
 
 .folder-btn:focus {
-  outline: 2px solid #4CAF50;
+  outline: 2px solid var(--primary-color);
   outline-offset: 2px;
-  box-shadow: 0 0 0 3px rgba(76, 175, 80, 0.3), var(--shadow-md);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary-color) 30%, transparent), var(--shadow-md);
 }
 
 .folder-btn:active {
@@ -569,7 +757,7 @@ body, html, #app {
 }
 
 #files-section h2 {
-  color: #4CAF50;
+  color: var(--primary-color);
   margin-bottom: 15px;
 }
 
@@ -618,7 +806,7 @@ body, html, #app {
 }
 
 .download-selected-btn {
-  background: #4CAF50;
+  background: var(--primary-color);
   color: white;
   border: none;
   padding: 8px 16px;
@@ -630,15 +818,15 @@ body, html, #app {
 }
 
 .download-selected-btn:hover {
-  background: #45a049;
+  background: var(--primary-color-hover);
   transform: translateY(-1px);
   box-shadow: var(--shadow-sm);
 }
 
 .download-selected-btn:focus {
-  outline: 2px solid #4CAF50;
+  outline: 2px solid var(--primary-color);
   outline-offset: 2px;
-  box-shadow: 0 0 0 3px rgba(76, 175, 80, 0.3), var(--shadow-sm);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary-color) 30%, transparent), var(--shadow-sm);
 }
 
 .download-selected-btn:active {
@@ -715,7 +903,7 @@ body, html, #app {
 }
 
 .light-mode .table-container thead {
-  background-color: #f5f5f5;
+  background-color: #f0efe8;
 }
 
 /* Estilos para modo claro */
@@ -724,12 +912,12 @@ body, html, #app {
 }
 
 .light-mode .table-container::-webkit-scrollbar-track {
-  background: #f5f5f5;
+  background: #f8f7f4;
 }
 
 .light-mode .table-container::-webkit-scrollbar-thumb {
-  background: #bbb;
-  border-color: #f5f5f5;
+  background: #c4c2bc;
+  border-color: #f8f7f4;
 }
 
 .light-mode .table-container::-webkit-scrollbar-thumb:hover {
@@ -775,7 +963,7 @@ body, html, #app {
 .empty-state-action {
   margin-top: var(--spacing-lg);
   padding: var(--spacing-sm) var(--spacing-lg);
-  background-color: #4CAF50;
+  background-color: var(--primary-color);
   color: white;
   border: none;
   border-radius: var(--radius-md);
@@ -786,7 +974,7 @@ body, html, #app {
 }
 
 .empty-state-action:hover {
-  background-color: #45a049;
+  background-color: var(--primary-color-hover);
   transform: translateY(-2px);
   box-shadow: var(--shadow-md);
 }
@@ -836,7 +1024,7 @@ body, html, #app {
 }
 
 #search-results h2 {
-  color: #4CAF50;
+  color: var(--primary-color);
   margin-bottom: 15px;
 }
 
@@ -872,7 +1060,7 @@ th, td {
 
 th {
   font-weight: 600;
-  color: #4CAF50;
+  color: var(--primary-color);
 }
 
 th.sortable {
@@ -934,7 +1122,7 @@ td:nth-child(5) { /* Descarga */
 /* Botones en la tabla */
 table button {
   padding: 6px 12px;
-  background-color: #4CAF50;
+  background-color: var(--primary-color);
   color: white;
   border: none;
   border-radius: var(--radius-sm);
@@ -944,15 +1132,15 @@ table button {
 }
 
 table button:hover:not(:disabled) {
-  background-color: #45a049;
+  background-color: var(--primary-color-hover);
   transform: translateY(-1px);
   box-shadow: var(--shadow-sm);
 }
 
 table button:focus {
-  outline: 2px solid #4CAF50;
+  outline: 2px solid var(--primary-color);
   outline-offset: 2px;
-  box-shadow: 0 0 0 3px rgba(76, 175, 80, 0.3);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary-color) 30%, transparent);
 }
 
 table button:active:not(:disabled) {
@@ -980,7 +1168,7 @@ table button:disabled {
 
 .bulk-info {
   font-size: 0.9em;
-  color: #4CAF50;
+  color: var(--primary-color);
   font-weight: 500;
   margin-right: auto;
 }
@@ -997,12 +1185,12 @@ table button:disabled {
 }
 
 .btn-bulk-yes {
-  background: #4caf50;
+  background: var(--primary-color);
   color: white;
 }
 
 .btn-bulk-yes:hover {
-  background: #45a049;
+  background: var(--primary-color-hover);
 }
 
 .btn-bulk-no {
@@ -1076,7 +1264,7 @@ table button:disabled {
   text-align: left;
   border-bottom: 1px solid #444;
   font-weight: 600;
-  color: #4CAF50;
+  color: var(--primary-color);
 }
 
 .downloads-table td {
@@ -1125,15 +1313,15 @@ table button:disabled {
 }
 
 .progress-container progress::-webkit-progress-value {
-  background-color: #4CAF50;
+  background-color: var(--primary-color);
 }
 
 .progress-container progress::-moz-progress-bar {
-  background-color: #4CAF50;
+  background-color: var(--primary-color);
 }
 
 .progress-text {
-  color: #4CAF50;
+  color: var(--primary-color);
   font-size: 12px;
   font-weight: 600;
   min-width: 40px;
@@ -1154,8 +1342,8 @@ table button:disabled {
   border-radius: 8px;
   font-size: 12px;
   font-weight: 600;
-  background-color: rgba(76, 175, 80, 0.2);
-  color: #4CAF50;
+  background-color: color-mix(in srgb, var(--primary-color) 20%, transparent);
+  color: var(--primary-color);
   white-space: nowrap;
 }
 
@@ -1192,15 +1380,15 @@ table button:disabled {
 }
 
 .btn-action:focus {
-  outline: 2px solid #4CAF50;
+  outline: 2px solid var(--primary-color);
   outline-offset: 2px;
-  box-shadow: 0 0 0 3px rgba(76, 175, 80, 0.3);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary-color) 30%, transparent);
 }
 
 .btn-action:focus-visible {
-  outline: 2px solid #4CAF50;
+  outline: 2px solid var(--primary-color);
   outline-offset: 2px;
-  box-shadow: 0 0 0 3px rgba(76, 175, 80, 0.3);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary-color) 30%, transparent);
 }
 
 .btn-action:active {
@@ -1219,9 +1407,9 @@ table button:disabled {
 }
 
 .btn-resume {
-  background-color: rgba(76, 175, 80, 0.15);
+  background-color: color-mix(in srgb, var(--primary-color) 15%, transparent);
   border: none;
-  color: #4CAF50;
+  color: var(--primary-color);
   width: 60px;
   height: 50px;
   padding: 0;
@@ -1233,15 +1421,15 @@ table button:disabled {
 }
 
 .btn-resume:hover {
-  background-color: rgba(76, 175, 80, 0.25);
-  border-color: #4CAF50;
+  background-color: color-mix(in srgb, var(--primary-color) 25%, transparent);
+  border-color: var(--primary-color);
   transform: scale(1.05);
 }
 
 .btn-resume:focus {
-  outline: 2px solid #4CAF50;
+  outline: 2px solid var(--primary-color);
   outline-offset: 2px;
-  box-shadow: 0 0 0 3px rgba(76, 175, 80, 0.3);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary-color) 30%, transparent);
 }
 
 .btn-resume:active {
@@ -1410,8 +1598,8 @@ table button:disabled {
 }
 
 .status-completed {
-  background-color: rgba(76, 175, 80, 0.2);
-  color: #4CAF50;
+  background-color: color-mix(in srgb, var(--primary-color) 20%, transparent);
+  color: var(--primary-color);
 }
 
 .status-waiting {
@@ -1507,12 +1695,12 @@ table button:disabled {
 }
 
 .obs-btn-yes {
-  background: #4caf50;
+  background: var(--primary-color);
   color: white;
 }
 
 .obs-btn-yes:hover {
-  background: #45a049;
+  background: var(--primary-color-hover);
   transform: scale(1.05);
 }
 
@@ -1661,13 +1849,13 @@ table button:disabled {
 }
 
 .toast-btn-yes {
-  background: rgba(76, 175, 80, 0.15);
-  color: #4caf50;
-  border-color: rgba(76, 175, 80, 0.3);
+  background: color-mix(in srgb, var(--primary-color) 15%, transparent);
+  color: var(--primary-color);
+  border-color: color-mix(in srgb, var(--primary-color) 30%, transparent);
 }
 
 .toast-btn-yes:hover {
-  background: rgba(76, 175, 80, 0.25);
+  background: color-mix(in srgb, var(--primary-color) 25%, transparent);
 }
 
 .toast-btn-no {
@@ -1808,14 +1996,14 @@ table button:disabled {
 }
 
 .btn-confirm {
-  background: #4caf50;
+  background: var(--primary-color);
   color: white;
 }
 
 .btn-confirm:hover {
-  background: #45a049;
+  background: var(--primary-color-hover);
   transform: translateY(-1px);
-  box-shadow: 0 4px 8px rgba(76, 175, 80, 0.3);
+  box-shadow: 0 4px 8px color-mix(in srgb, var(--primary-color) 30%, transparent);
 }
 
 .btn-cancel {
@@ -1935,7 +2123,7 @@ progress {
 
 .settings-header h2 {
   margin: 0;
-  color: #4CAF50;
+  color: var(--primary-color);
   font-size: 24px;
 }
 
@@ -1989,7 +2177,7 @@ progress {
 }
 
 .settings-section h3 {
-  color: #4CAF50;
+  color: var(--primary-color);
   font-size: 18px;
   margin: 0 0 15px 0;
   padding-bottom: 8px;
@@ -2024,6 +2212,53 @@ progress {
   color: #888;
   font-size: 12px;
   font-style: italic;
+}
+
+/* Selector de color primario */
+.color-picker-group {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.color-option-btn {
+  width: 48px;
+  height: 48px;
+  border-radius: 8px;
+  border: 3px solid transparent;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+.color-option-btn:hover {
+  transform: scale(1.1);
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);
+}
+
+.color-option-btn.active {
+  border-color: #fff;
+  box-shadow: 0 0 0 3px var(--primary-color), 0 4px 12px rgba(0, 0, 0, 0.4);
+  transform: scale(1.15);
+}
+
+.color-check {
+  color: white;
+  font-size: 24px;
+  font-weight: bold;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+  filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.8));
+}
+
+.light-mode .color-option-btn.active,
+body.light-mode .color-option-btn.active {
+  border-color: #333;
+  box-shadow: 0 0 0 3px var(--primary-color), 0 4px 12px rgba(0, 0, 0, 0.2);
 }
 
 /* Configuración de límites de memoria */
@@ -2114,12 +2349,12 @@ progress {
 }
 
 .stat-item {
-  color: #4CAF50;
+  color: var(--primary-color);
   font-weight: 500;
 }
 
 .light-mode .stat-item {
-  color: #45a049;
+  color: var(--primary-color-hover);
 }
 
 .light-mode .cleanup-stats {
@@ -2143,9 +2378,9 @@ progress {
 }
 
 .theme-option-btn.active {
-  background-color: #4CAF50;
+  background-color: var(--primary-color);
   color: white;
-  border-color: #4CAF50;
+  border-color: var(--primary-color);
 }
 
 .number-input {
@@ -2193,7 +2428,7 @@ progress {
 
 .select-folder-btn {
   padding: 8px 16px;
-  background-color: #4CAF50;
+  background-color: var(--primary-color);
   color: white;
   border: none;
   border-radius: var(--radius-sm);
@@ -2205,15 +2440,15 @@ progress {
 }
 
 .select-folder-btn:hover {
-  background-color: #45a049;
+  background-color: var(--primary-color-hover);
   transform: translateY(-1px);
   box-shadow: var(--shadow-sm);
 }
 
 .select-folder-btn:focus {
-  outline: 2px solid #4CAF50;
+  outline: 2px solid var(--primary-color);
   outline-offset: 2px;
-  box-shadow: 0 0 0 3px rgba(76, 175, 80, 0.3);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary-color) 30%, transparent);
 }
 
 .select-folder-btn:active {
@@ -2234,7 +2469,7 @@ progress {
   width: 18px;
   height: 18px;
   cursor: pointer;
-  accent-color: #4CAF50;
+  accent-color: var(--primary-color);
 }
 
 .danger-btn {
@@ -2277,7 +2512,7 @@ progress {
 
 .primary-btn {
   padding: 10px 24px;
-  background-color: #4CAF50;
+  background-color: var(--primary-color);
   color: white;
   border: none;
   border-radius: var(--radius-md);
@@ -2289,15 +2524,15 @@ progress {
 }
 
 .primary-btn:hover {
-  background-color: #45a049;
+  background-color: var(--primary-color-hover);
   transform: translateY(-1px);
   box-shadow: var(--shadow-md);
 }
 
 .primary-btn:focus {
-  outline: 2px solid #4CAF50;
+  outline: 2px solid var(--primary-color);
   outline-offset: 2px;
-  box-shadow: 0 0 0 3px rgba(76, 175, 80, 0.3), var(--shadow-md);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary-color) 30%, transparent), var(--shadow-md);
 }
 
 .primary-btn:active {
@@ -2307,8 +2542,8 @@ progress {
 
 /* Modo claro para el panel */
 .light-mode .settings-panel {
-  background-color: #f5f5f5;
-  border-left-color: #ddd;
+  background-color: #f8f7f4;
+  border-left-color: #d4d2cc;
 }
 
 .light-mode .settings-header {
@@ -2335,15 +2570,15 @@ progress {
 }
 
 .light-mode .number-input {
-  background-color: white;
-  color: #333;
-  border-color: #ccc;
+  background-color: #faf9f6;
+  color: #2c2c2c;
+  border-color: #d4d2cc;
 }
 
 .light-mode .path-input {
-  background-color: white;
-  color: #333;
-  border-color: #ccc;
+  background-color: #faf9f6;
+  color: #2c2c2c;
+  border-color: #d4d2cc;
 }
 
 .light-mode .checkbox-label {
@@ -2360,11 +2595,11 @@ progress {
 
 /* Modo claro para lista de descargas */
 .light-mode .downloads-table {
-  border-color: #ddd;
+  border-color: #d4d2cc;
 }
 
 .light-mode .downloads-table thead {
-  background-color: #efefef;
+  background-color: #f0efe8;
 }
 
 .light-mode .downloads-table th,
@@ -2373,7 +2608,7 @@ progress {
 }
 
 .light-mode .downloads-table tbody tr:hover {
-  background-color: #f5f5f5;
+  background-color: #f0efe8;
 }
 
 .light-mode .btn-clear-downloads {
@@ -2394,8 +2629,8 @@ progress {
 }
 
 .light-mode .download-list-item {
-  background-color: #f9f9f9;
-  border-color: #ddd;
+  background-color: #faf9f6;
+  border-color: #d4d2cc;
 }
 
 /* Modo claro para confirmaciones */
@@ -2513,7 +2748,7 @@ progress {
   position: fixed;
   bottom: 20px;
   right: 20px;
-  background-color: #4CAF50;
+  background-color: var(--primary-color);
   color: white;
   border: none;
   border-radius: 50px;
@@ -2521,7 +2756,7 @@ progress {
   height: 60px;
   font-size: 20px;
   cursor: pointer;
-  box-shadow: 0 4px 12px rgba(76, 175, 80, 0.4);
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--primary-color) 40%, transparent);
   transition: all 0.3s ease;
   z-index: 500;
   display: flex;
@@ -2530,8 +2765,8 @@ progress {
 }
 
 .floating-downloads-btn:hover {
-  background-color: #45a049;
-  box-shadow: 0 6px 16px rgba(76, 175, 80, 0.6);
+  background-color: var(--primary-color-hover);
+  box-shadow: 0 6px 16px color-mix(in srgb, var(--primary-color) 60%, transparent);
   transform: scale(1.1);
 }
 
@@ -2691,11 +2926,11 @@ progress {
 }
 
 .light-mode .floating-downloads-btn {
-  background-color: #4CAF50;
+  background-color: var(--primary-color);
 }
 
 .light-mode .floating-downloads-btn:hover {
-  background-color: #45a049;
+  background-color: var(--primary-color-hover);
 }
 
 /* ========== PANEL DE FILTROS AVANZADOS ========== */
@@ -3134,17 +3369,17 @@ progress {
 .light-mode .filter-subsection,
 .light-mode .tag-panel,
 .light-mode .stats-section {
-  background-color: white;
-  border-color: #ddd;
+  background-color: #faf9f6;
+  border-color: #d4d2cc;
 }
 
 .light-mode .preset-select,
 .light-mode .preset-name-input,
 .light-mode .text-input,
 .light-mode .text-item {
-  background-color: white;
-  color: #333;
-  border-color: #ddd;
+  background-color: #faf9f6;
+  color: #2c2c2c;
+  border-color: #d4d2cc;
 }
 
 .light-mode .panel-header {
@@ -3152,7 +3387,7 @@ progress {
 }
 
 .light-mode .tag-checkbox:hover {
-  background-color: #f0f0f0;
+  background-color: #f0efe8;
 }
 
 .light-mode .tag-checkbox span,
@@ -3313,15 +3548,15 @@ progress {
 }
 
 .light-mode .files-header {
-  background-color: #f5f5f5;
+  background-color: #f8f7f4;
 }
 
 .light-mode .downloads-header {
-  background-color: #f5f5f5;
+  background-color: #f8f7f4;
 }
 
 .light-mode .downloads-table thead {
-  background-color: #efefef;
+  background-color: #f0efe8;
 }
 
 .light-mode .downloads-table th {
