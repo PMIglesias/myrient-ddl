@@ -264,6 +264,7 @@ class QueueDatabase {
                     completed_at = COALESCE(@completedAt, completed_at),
                     retry_count = COALESCE(@retryCount, retry_count),
                     last_error = COALESCE(@lastError, last_error),
+                    force_overwrite = COALESCE(@forceOverwrite, force_overwrite),
                     updated_at = @updatedAt
                 WHERE id = @id
             `),
@@ -541,6 +542,7 @@ class QueueDatabase {
                 completedAt: updates.completedAt || null,
                 retryCount: updates.retryCount ?? null,
                 lastError: updates.lastError || null,
+                forceOverwrite: updates.forceOverwrite !== undefined ? (updates.forceOverwrite ? 1 : 0) : null,
                 updatedAt: now
             });
 
@@ -672,10 +674,189 @@ class QueueDatabase {
 
     /**
      * Obtiene las descargas pausadas
-     * @returns {Array} Lista de descargas pausadas
+     * Filtra descargas que están realmente completadas (tienen completed_at o progreso >= 1.0)
+     * @returns {Array} Lista de descargas pausadas (excluyendo completadas)
      */
     getPaused() {
-        return this.statements.getPaused.all().map(r => this._rowToDownload(r));
+        const paused = this.statements.getPaused.all().map(r => this._rowToDownload(r));
+        
+        // Filtrar descargas que están realmente completadas pero mal etiquetadas como pausadas
+        return paused.filter(download => {
+            // Si tiene completed_at, está completada, no pausada
+            if (download.completedAt) {
+                return false;
+            }
+            // Si el progreso es >= 1.0 (100%), está completada
+            if (download.progress !== null && download.progress !== undefined && download.progress >= 1.0) {
+                return false;
+            }
+            return true;
+        });
+    }
+
+    /**
+     * Limpia descargas mal etiquetadas: corrige estados incorrectos de descargas "paused"
+     * @param {number} maxAgeDays - Máxima antigüedad en días para considerar una descarga como "antigua" (default: 7)
+     * @returns {Object} Estadísticas de la limpieza
+     */
+    cleanupMislabeledDownloads(maxAgeDays = 7) {
+        try {
+            const now = Date.now();
+            const maxAge = maxAgeDays * 24 * 60 * 60 * 1000; // Convertir días a milisegundos
+            const cutoffDate = now - maxAge;
+            
+            let totalCorrected = 0;
+            let completedCorrected = 0;
+            let failedCorrected = 0;
+            let cancelledCorrected = 0;
+            let oldCleaned = 0;
+            
+            // 1. Buscar descargas "paused" que están realmente completadas
+            const completedStmt = this.db.prepare(`
+                SELECT id, progress, completed_at 
+                FROM downloads 
+                WHERE state = 'paused' 
+                AND (completed_at IS NOT NULL OR (progress IS NOT NULL AND progress >= 1.0))
+            `);
+            const completed = completedStmt.all();
+            
+            // 2. Buscar descargas "paused" que tienen errores (deberían ser "failed")
+            const failedStmt = this.db.prepare(`
+                SELECT id, last_error 
+                FROM downloads 
+                WHERE state = 'paused' 
+                AND last_error IS NOT NULL 
+                AND last_error != ''
+                AND (completed_at IS NULL AND (progress IS NULL OR progress < 1.0))
+            `);
+            const failed = failedStmt.all();
+            
+            // 3. Buscar descargas "paused" muy antiguas sin progreso (probablemente canceladas/abandonadas)
+            const oldStmt = this.db.prepare(`
+                SELECT id, created_at, updated_at, progress, downloaded_bytes, total_bytes
+                FROM downloads 
+                WHERE state = 'paused' 
+                AND created_at < ?
+                AND (progress IS NULL OR progress = 0 OR progress < 0.01)
+                AND (downloaded_bytes IS NULL OR downloaded_bytes = 0)
+                AND (completed_at IS NULL)
+                AND (last_error IS NULL OR last_error = '')
+            `);
+            const oldPaused = oldStmt.all(cutoffDate);
+            
+            // 4. Buscar descargas "paused" extremadamente antiguas (más de 30 días) sin importar progreso
+            // Estas probablemente fueron abandonadas cuando el usuario limpió la lista del frontend
+            const veryOldCutoff = now - (30 * 24 * 60 * 60 * 1000); // 30 días
+            const veryOldStmt = this.db.prepare(`
+                SELECT id, created_at, updated_at, progress
+                FROM downloads 
+                WHERE state = 'paused' 
+                AND created_at < ?
+                AND (completed_at IS NULL)
+                AND (last_error IS NULL OR last_error = '')
+                AND (progress IS NULL OR progress < 1.0)
+            `);
+            const veryOldPaused = veryOldStmt.all(veryOldCutoff);
+            
+            log.info(`Limpieza de descargas mal etiquetadas: ${completed.length} completadas, ${failed.length} fallidas, ${oldPaused.length} antiguas sin progreso, ${veryOldPaused.length} muy antiguas (30+ días)`);
+            
+            // Actualizar descargas completadas
+            if (completed.length > 0) {
+                const updateStmt = this.db.prepare(`
+                    UPDATE downloads 
+                    SET state = ?, updated_at = ?
+                    WHERE id = ?
+                `);
+                
+                for (const download of completed) {
+                    try {
+                        updateStmt.run(DownloadState.COMPLETED, now, download.id);
+                        completedCorrected++;
+                        totalCorrected++;
+                    } catch (error) {
+                        log.warn(`Error corrigiendo descarga completada ${download.id}:`, error.message);
+                    }
+                }
+            }
+            
+            // Actualizar descargas fallidas
+            if (failed.length > 0) {
+                const updateStmt = this.db.prepare(`
+                    UPDATE downloads 
+                    SET state = ?, updated_at = ?
+                    WHERE id = ?
+                `);
+                
+                for (const download of failed) {
+                    try {
+                        updateStmt.run(DownloadState.FAILED, now, download.id);
+                        failedCorrected++;
+                        totalCorrected++;
+                    } catch (error) {
+                        log.warn(`Error corrigiendo descarga fallida ${download.id}:`, error.message);
+                    }
+                }
+            }
+            
+            // Limpiar descargas muy antiguas sin progreso (marcarlas como canceladas o eliminarlas)
+            if (oldPaused.length > 0) {
+                const updateStmt = this.db.prepare(`
+                    UPDATE downloads 
+                    SET state = ?, updated_at = ?
+                    WHERE id = ?
+                `);
+                
+                for (const download of oldPaused) {
+                    try {
+                        // Marcar como cancelada si es muy antigua y no tiene progreso
+                        updateStmt.run(DownloadState.CANCELLED, now, download.id);
+                        cancelledCorrected++;
+                        totalCorrected++;
+                        oldCleaned++;
+                    } catch (error) {
+                        log.warn(`Error limpiando descarga antigua ${download.id}:`, error.message);
+                    }
+                }
+            }
+            
+            // Limpiar descargas extremadamente antiguas (30+ días) - probablemente abandonadas
+            if (veryOldPaused.length > 0) {
+                const updateStmt = this.db.prepare(`
+                    UPDATE downloads 
+                    SET state = ?, updated_at = ?
+                    WHERE id = ?
+                `);
+                
+                for (const download of veryOldPaused) {
+                    try {
+                        // Marcar como cancelada si es extremadamente antigua
+                        updateStmt.run(DownloadState.CANCELLED, now, download.id);
+                        cancelledCorrected++;
+                        totalCorrected++;
+                        oldCleaned++;
+                    } catch (error) {
+                        log.warn(`Error limpiando descarga muy antigua ${download.id}:`, error.message);
+                    }
+                }
+            }
+            
+            if (totalCorrected > 0) {
+                log.info(`Limpieza completada: ${completedCorrected} completadas, ${failedCorrected} fallidas, ${cancelledCorrected} canceladas (${oldCleaned} antiguas sin progreso)`);
+            }
+            
+            return { 
+                corrected: totalCorrected, 
+                completed: completedCorrected,
+                failed: failedCorrected,
+                cancelled: cancelledCorrected,
+                oldCleaned: oldCleaned,
+                total: completed.length + failed.length + oldPaused.length + veryOldPaused.length
+            };
+            
+        } catch (error) {
+            log.error('Error en limpieza de descargas mal etiquetadas:', error);
+            return { corrected: 0, total: 0, error: error.message };
+        }
     }
 
     /**
@@ -915,6 +1096,89 @@ class QueueDatabase {
      */
     cancelDownload(id) {
         return this.setState(id, DownloadState.CANCELLED);
+    }
+
+    /**
+     * Confirma sobrescritura de una descarga en estado awaiting
+     * Cambia el estado a queued y activa forceOverwrite
+     * @param {number} id - ID de la descarga
+     * @returns {boolean}
+     */
+    confirmOverwrite(id) {
+        const download = this.getById(id);
+        if (!download) return false;
+
+        // Permitir confirmar si está en 'awaiting', 'queued', 'paused' o 'completed' (completed puede ser desincronización)
+        // Si está en 'completed', cambiar a 'queued' y activar forceOverwrite para reiniciar
+        const validStates = [DownloadState.AWAITING, DownloadState.QUEUED, DownloadState.PAUSED, DownloadState.COMPLETED];
+        if (!validStates.includes(download.state)) {
+            log.warn(`No se puede confirmar sobrescritura de descarga en estado ${download.state}`);
+            return false;
+        }
+        
+        // Si está en 'completed', resetear progreso también
+        const resetProgress = download.state === DownloadState.COMPLETED;
+
+        // Cambiar a queued y activar forceOverwrite usando updateDownload con todos los parámetros
+        this.updateDownload(id, {
+            state: DownloadState.QUEUED,
+            forceOverwrite: true,
+            progress: resetProgress ? 0 : undefined,
+            downloadedBytes: resetProgress ? 0 : undefined,
+            completedAt: resetProgress ? null : undefined
+        });
+
+        this._logEvent(id, 'overwrite_confirmed', { manual: true });
+        log.info(`Sobrescritura confirmada para descarga ${id}`);
+        return true;
+    }
+
+    /**
+     * Reinicia una descarga cancelada o fallida
+     * Resetea el progreso y la coloca en cola
+     * @param {number} id - ID de la descarga
+     * @returns {boolean}
+     */
+    retryDownload(id) {
+        const download = this.getById(id);
+        if (!download) return false;
+
+        // NO permitir reiniciar descargas completadas
+        if (download.state === DownloadState.COMPLETED) {
+            log.warn(`No se puede reiniciar descarga en estado ${download.state}`);
+            return false;
+        }
+
+        // Solo reiniciar si está cancelada, fallida, awaiting o pausada
+        const validStates = [DownloadState.CANCELLED, DownloadState.FAILED, DownloadState.AWAITING, DownloadState.PAUSED];
+        if (!validStates.includes(download.state)) {
+            log.warn(`No se puede reiniciar descarga en estado ${download.state}`);
+            return false;
+        }
+
+        // Si está en estado awaiting o pausada (puede ser una descarga que estaba awaiting), activar forceOverwrite también
+        const forceOverwrite = (download.state === DownloadState.AWAITING || download.state === DownloadState.PAUSED) ? 1 : null;
+
+        // Resetear completamente: estado, progreso, bytes descargados, errores
+        this.statements.updateDownload.run({
+            id,
+            state: DownloadState.QUEUED,
+            progress: 0,
+            downloadedBytes: 0,
+            totalBytes: null, // Se actualizará cuando se reinicie
+            savePath: null, // Se actualizará cuando se reinicie
+            url: null, // Se actualizará cuando se reinicie
+            startedAt: null,
+            completedAt: null,
+            retryCount: 0, // Resetear contador de reintentos
+            lastError: null, // Limpiar error anterior
+            forceOverwrite: forceOverwrite, // Activar sobrescritura si estaba awaiting
+            updatedAt: Date.now()
+        });
+
+        this._logEvent(id, 'retry', { manual: true, wasAwaiting: download.state === DownloadState.AWAITING });
+        log.info(`Descarga ${id} reiniciada manualmente${download.state === DownloadState.AWAITING ? ' (con sobrescritura)' : ''}`);
+        return true;
     }
 
     // =====================

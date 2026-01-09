@@ -635,6 +635,7 @@ body.light-mode #content-container::-webkit-scrollbar-thumb:hover {
   position: relative;
   display: flex;
   align-items: center;
+  margin: 0;
 }
 
 .folder-btn {
@@ -1025,7 +1026,92 @@ body.light-mode .folder-btn {
 
 #search-results h2 {
   color: var(--primary-color);
+  margin-bottom: 20px;
+  font-size: 24px;
+}
+
+/* Indicador de carga durante búsqueda */
+.search-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 60px 20px;
+  gap: 20px;
+}
+
+.search-loading p {
+  color: #888;
+  font-size: 16px;
+  margin: 0;
+  font-weight: 500;
+}
+
+.search-spinner {
+  width: 50px;
+  height: 50px;
+  border: 4px solid rgba(255, 255, 255, 0.1);
+  border-top-color: var(--primary-color);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Modo claro para indicador de carga */
+.light-mode .search-loading p {
+  color: #666;
+}
+
+.light-mode .search-spinner {
+  border-color: rgba(0, 0, 0, 0.1);
+  border-top-color: var(--primary-color);
+}
+
+/* Sin resultados de búsqueda */
+.search-no-results {
+  text-align: center;
+  padding: 60px 20px;
+  color: #888;
+  font-size: 16px;
+}
+
+.light-mode .search-no-results {
+  color: #666;
+}
+
+/* Reducir márgenes de secciones cuando están dentro de resultados de búsqueda */
+#search-results #folders-section {
+  margin-bottom: 20px;
+}
+
+#search-results #folders-section h2 {
   margin-bottom: 15px;
+  font-size: 20px;
+}
+
+#search-results .folders-grid {
+  margin-bottom: 0;
+  gap: var(--spacing-sm);
+}
+
+#search-results #files-section {
+  margin-bottom: 0;
+  margin-top: 20px;
+}
+
+#search-results #files-section h2 {
+  margin-bottom: 15px;
+  font-size: 20px;
+}
+
+/* Ajustar altura del contenedor de tabla en resultados de búsqueda */
+#search-results .table-container {
+  max-height: calc(100vh - 350px);
 }
 
 .search-folders-section, .search-files-section {

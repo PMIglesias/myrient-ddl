@@ -5,6 +5,7 @@
  */
 
 import { pendingConfirmations, selectedDownloads, downloadQueue, downloads } from './useDownloadState';
+import * as api from '../../services/api';
 
 /**
  * Composable de confirmaciones
@@ -13,40 +14,71 @@ import { pendingConfirmations, selectedDownloads, downloadQueue, downloads } fro
  */
 export function useDownloadConfirmations(processDownloadQueueFn, saveDownloadHistoryFn) {
     
-    const confirmOverwrite = (downloadId) => {
+    const confirmOverwrite = async (downloadId) => {
         const conf = pendingConfirmations.value.find(c => c.id === downloadId);
-        if (!conf) return;
-
-        pendingConfirmations.value = pendingConfirmations.value.filter(c => c.id !== downloadId);
-        selectedDownloads.value.delete(downloadId);
-
-        const inQueue = downloadQueue.value.find(d => d.id === downloadId);
-        if (inQueue) {
-            inQueue.forceOverwrite = true;
-        } else {
-            downloadQueue.value.push({
-                id: conf.id,
-                title: conf.title,
-                status: 'queued',
-                forceOverwrite: true,
-                addedAt: Date.now()
-            });
+        if (!conf) {
+            console.debug(`[confirmOverwrite] No se encontró confirmación para descarga ${downloadId}, pero intentando confirmar de todas formas`);
+            // Continuar aunque no haya confirmación pendiente, puede que el estado ya haya cambiado
         }
 
-        if (downloads.value[downloadId]) {
-            // Resetear completamente la descarga
-            const dl = downloads.value[downloadId];
-            dl.state = 'queued';
-            dl.percent = 0;
-            dl.downloadedBytes = 0;
-            delete dl.error;
-            delete dl.speed;
-            delete dl.eta;
+        try {
+            // Llamar al backend para confirmar sobrescritura
+            let result = await api.confirmOverwrite(downloadId);
+            let usedFallback = false;
             
-            console.log(`[confirmOverwrite] Descarga ${downloadId} reiniciada para sobrescritura`);
-        }
+            if (!result.success) {
+                console.error(`[confirmOverwrite] Error confirmando sobrescritura:`, result.error);
+                // Si falla porque el estado es 'queued', intentar usar retryDownload como fallback
+                if (result.error && (result.error.includes('estado queued') || result.error.includes('estado completed'))) {
+                    console.log(`[confirmOverwrite] Estado problemático, intentando reiniciar con forceOverwrite`);
+                    result = await api.retryDownload(downloadId);
+                    usedFallback = true;
+                    if (!result.success) {
+                        console.error(`[confirmOverwrite] Error reiniciando descarga:`, result.error);
+                        return;
+                    }
+                } else {
+                    return;
+                }
+            }
 
-        if (processDownloadQueueFn) processDownloadQueueFn();
+            // Actualizar estado local
+            pendingConfirmations.value = pendingConfirmations.value.filter(c => c.id !== downloadId);
+            selectedDownloads.value.delete(downloadId);
+
+            const inQueue = downloadQueue.value.find(d => d.id === downloadId);
+            if (inQueue) {
+                inQueue.forceOverwrite = true;
+                inQueue.status = 'queued';
+            } else {
+                const downloadTitle = conf?.title || downloads.value[downloadId]?.title || 'Descarga';
+                downloadQueue.value.push({
+                    id: downloadId,
+                    title: downloadTitle,
+                    status: 'queued',
+                    forceOverwrite: true,
+                    addedAt: Date.now()
+                });
+            }
+
+            if (downloads.value[downloadId]) {
+                // Resetear completamente la descarga
+                const dl = downloads.value[downloadId];
+                dl.state = 'queued';
+                dl.percent = 0;
+                dl.downloadedBytes = 0;
+                delete dl.error;
+                delete dl.speed;
+                delete dl.eta;
+                
+                console.log(`[confirmOverwrite] Descarga ${downloadId} confirmada para sobrescritura${usedFallback ? ' (usando fallback)' : ''}`);
+            }
+
+            // El backend ya procesa la cola, pero por si acaso también lo hacemos aquí
+            if (processDownloadQueueFn) processDownloadQueueFn();
+        } catch (error) {
+            console.error('[confirmOverwrite] Error confirmando sobrescritura:', error);
+        }
     };
 
     const cancelOverwrite = (downloadId) => {

@@ -92,19 +92,31 @@ class DownloadService extends BaseService {
      */
     async shouldUseChunkedDownload(url, fileSize) {
         try {
+            this.log.info(`[DownloadService] Evaluando descarga chunked: url=${!!url}, fileSize=${this._formatBytes(fileSize)}`);
+            this.log.info(`[DownloadService] Config chunked:`, {
+                forceSimpleDownload: this.chunkedConfig.forceSimpleDownload,
+                enabled: this.chunkedConfig.enabled,
+                sizeThreshold: this._formatBytes(this.chunkedConfig.sizeThreshold || 0),
+                maxChunks: this.chunkedConfig.maxChunks,
+                minChunkSize: this._formatBytes(this.chunkedConfig.minChunkSize || 0)
+            });
+            
             // Si chunked está deshabilitado explícitamente, nunca usar
             if (this.chunkedConfig.forceSimpleDownload) {
-                this.log.debug('Descargas fragmentadas deshabilitadas por configuración');
+                this.log.info('[DownloadService] ❌ Descargas fragmentadas deshabilitadas por configuración (forceSimpleDownload)');
                 return false;
             }
             
-            // Si chunked está deshabilitado, nunca usar
-            if (!this.chunkedConfig.enabled) {
+            // Si chunked está explícitamente deshabilitado, nunca usar
+            // enabled es true por defecto (se establece en constructor)
+            if (this.chunkedConfig.enabled === false) {
+                this.log.info('[DownloadService] ❌ Descargas fragmentadas deshabilitadas (enabled=false)');
                 return false;
             }
 
             // Si no hay URL, no se puede verificar soporte de Range requests
             if (!url) {
+                this.log.info('[DownloadService] ❌ No hay URL, usando descarga simple');
                 return false;
             }
 
@@ -112,12 +124,13 @@ class DownloadService extends BaseService {
             // Usar sizeThreshold si está configurado, sino threshold
             const threshold = this.chunkedConfig.sizeThreshold || this.chunkedConfig.threshold || (25 * 1024 * 1024); // 25MB default
             if (fileSize < threshold) {
-                this.log.debug(`Archivo (${this._formatBytes(fileSize)}) menor al umbral (${this._formatBytes(threshold)})`);
+                this.log.info(`[DownloadService] ❌ Archivo (${this._formatBytes(fileSize)}) menor al umbral (${this._formatBytes(threshold)})`);
                 return false;
             }
 
             // Si fileSize es 0 o desconocido, no usar chunked (no se puede dividir)
             if (!fileSize || fileSize <= 0) {
+                this.log.info('[DownloadService] ❌ FileSize inválido o cero, usando descarga simple');
                 return false;
             }
 
@@ -130,17 +143,26 @@ class DownloadService extends BaseService {
             const optimalChunks = this.calculateOptimalChunks(fileSize);
             const avgChunkSize = fileSize / optimalChunks;
 
+            this.log.info(`[DownloadService] Cálculo de chunks:`, {
+                optimalChunks,
+                avgChunkSize: this._formatBytes(avgChunkSize),
+                minChunkSize: this._formatBytes(minChunkSize),
+                maxChunks
+            });
+
             // Si los chunks serían muy pequeños, no usar chunked
             if (avgChunkSize < minChunkSize) {
+                this.log.info(`[DownloadService] ❌ Chunks muy pequeños (${this._formatBytes(avgChunkSize)} < ${this._formatBytes(minChunkSize)}), usando descarga simple`);
                 return false;
             }
 
             // Por defecto, usar chunked para archivos grandes
             // NOTA: La verificación de soporte de Range requests se hace en DownloadManager
+            this.log.info(`[DownloadService] ✓ Usando descarga FRAGMENTADA: ${this._formatBytes(fileSize)}, ${optimalChunks} chunks`);
             return true;
 
         } catch (error) {
-            this.log.warn('Error determinando estrategia de descarga, usando simple:', error.message);
+            this.log.warn('[DownloadService] Error determinando estrategia de descarga, usando simple:', error.message);
             return false; // En caso de error, usar descarga simple (más segura)
         }
     }

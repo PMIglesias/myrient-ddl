@@ -6,10 +6,13 @@
  */
 
 const { ipcMain, dialog } = require('electron');
+const fs = require('fs');
+const path = require('path');
 const database = require('./database');
 const downloadManager = require('./downloadManager');
 const queueDatabase = require('./queueDatabase');
 const { serviceManager } = require('./services');
+const { safeUnlink } = require('./utils/fileHelpers');
 const { 
     logger, 
     readJSONFile, 
@@ -86,16 +89,13 @@ function registerHandlers(mainWindow) {
             // Normalizar opciones usando SearchService
             const normalizedOptions = searchService.normalizeSearchOptions(options);
             
-            // Determinar estrategia de búsqueda
-            const strategy = searchService.determineSearchStrategy(validation.data, normalizedOptions);
-            
-            // Preparar término para FTS si es necesario
-            let searchTermToUse = validation.data;
-            if (strategy === 'fts') {
-                searchTermToUse = searchService.prepareFTSTerm(validation.data, normalizedOptions);
-            }
+            // NO preparar el término para FTS aquí - dejar que database.search lo haga
+            // según el método que realmente va a usar (FTS o LIKE)
+            // Esto evita problemas cuando FTS no está disponible pero el término ya fue preparado para FTS
+            const searchTermToUse = validation.data;
             
             // Ejecutar búsqueda (database.search es síncrono, pero lo mantenemos como async para consistencia)
+            // database.search preparará el término internamente según useFTS
             const result = database.search(searchTermToUse, normalizedOptions);
             
             // Calcular paginación si es necesario
@@ -407,6 +407,227 @@ function registerHandlers(mainWindow) {
         }
         
         return downloadManager.cancelDownload(validation.data);
+    }));
+
+    ipcMain.handle('retry-download', createHandler('retry-download', async (event, downloadId) => {
+        const { downloadService, queueService } = getServices();
+        
+        // Validar ID de descarga
+        const validation = validateDownloadIdLegacy(downloadId);
+        if (!validation.valid) {
+            return { success: false, error: validation.error };
+        }
+        
+        const id = validation.data;
+        
+        // Verificar que la descarga existe
+        const dbDownload = queueDatabase.getById(id);
+        if (!dbDownload) {
+            return { success: false, error: 'Descarga no encontrada' };
+        }
+        
+        // Verificar que está en un estado válido para reiniciar
+        // NO permitir reiniciar descargas completadas
+        if (dbDownload.state === 'completed') {
+            return { success: false, error: `No se puede reiniciar descarga en estado ${dbDownload.state}` };
+        }
+        
+        const validStates = ['cancelled', 'failed', 'awaiting', 'paused'];
+        if (!validStates.includes(dbDownload.state)) {
+            return { success: false, error: `No se puede reiniciar descarga en estado ${dbDownload.state}` };
+        }
+        
+        // Limpiar chunks de descargas fragmentadas si existen
+        try {
+            const chunks = queueDatabase.getChunks(id);
+            if (chunks && chunks.length > 0) {
+                log.info(`Limpiando ${chunks.length} chunks para reinicio de descarga ${id}`);
+                // Eliminar archivos temporales de chunks
+                chunks.forEach(chunk => {
+                    if (chunk.tempFile && fs.existsSync(chunk.tempFile)) {
+                        safeUnlink(chunk.tempFile);
+                    }
+                });
+                // Eliminar chunks de la base de datos
+                queueDatabase.statements.deleteChunks.run(id);
+            }
+        } catch (error) {
+            log.warn(`Error limpiando chunks para descarga ${id}:`, error.message);
+        }
+        
+        // Limpiar archivo parcial si existe (para descargas simples)
+        try {
+            if (dbDownload.savePath) {
+                const partialPath = dbDownload.savePath + '.part';
+                if (fs.existsSync(partialPath)) {
+                    safeUnlink(partialPath);
+                    log.info(`Archivo parcial eliminado: ${partialPath}`);
+                }
+            }
+        } catch (error) {
+            log.warn(`Error limpiando archivo parcial para descarga ${id}:`, error.message);
+        }
+        
+        // Reiniciar en SQLite (resetear progreso y volver a cola)
+        const retried = queueDatabase.retryDownload(id);
+        if (!retried) {
+            return { success: false, error: 'Error al reiniciar descarga' };
+        }
+        
+        // Obtener la descarga actualizada de la BD
+        const updatedDownload = queueDatabase.getById(id);
+        if (!updatedDownload) {
+            return { success: false, error: 'Error obteniendo descarga actualizada' };
+        }
+        
+        // Agregar a la cola en memoria del DownloadManager si no está ya ahí
+        const inQueue = downloadManager.downloadQueue.some(d => d.id === id);
+        if (!inQueue) {
+            downloadManager.downloadQueue.push({
+                id: updatedDownload.id,
+                title: updatedDownload.title,
+                downloadPath: updatedDownload.downloadPath,
+                preserveStructure: updatedDownload.preserveStructure,
+                forceOverwrite: updatedDownload.forceOverwrite || false,
+                retryCount: updatedDownload.retryCount || 0,
+                addedAt: updatedDownload.createdAt,
+                queuePosition: updatedDownload.queuePosition,
+                priority: updatedDownload.priority || 1,
+                savePath: updatedDownload.savePath || null
+            });
+            log.info(`Descarga ${id} agregada a la cola en memoria después de reiniciar`);
+        }
+        
+        // Notificar al frontend que la descarga está en cola
+        if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('download-progress', {
+                id,
+                state: 'queued',
+                title: updatedDownload.title,
+                progress: 0,
+                downloadedBytes: 0
+            });
+        }
+        
+        // Procesar la cola para iniciar la descarga
+        setImmediate(() => downloadManager.processQueue());
+        
+        return { success: true };
+    }));
+
+    ipcMain.handle('confirm-overwrite', createHandler('confirm-overwrite', async (event, downloadId) => {
+        // Validar ID de descarga
+        const validation = validateDownloadIdLegacy(downloadId);
+        if (!validation.valid) {
+            return { success: false, error: validation.error };
+        }
+        
+        const id = validation.data;
+        
+        // Verificar que la descarga existe
+        const dbDownload = queueDatabase.getById(id);
+        if (!dbDownload) {
+            return { success: false, error: 'Descarga no encontrada' };
+        }
+        
+        // Verificar que está en estado awaiting, queued, paused o completed (completed puede ser desincronización)
+        const validStates = ['awaiting', 'queued', 'paused', 'completed'];
+        if (!validStates.includes(dbDownload.state)) {
+            return { success: false, error: `No se puede confirmar sobrescritura de descarga en estado ${dbDownload.state}` };
+        }
+        
+        // Confirmar sobrescritura en SQLite (cambiar a queued y activar forceOverwrite)
+        const confirmed = queueDatabase.confirmOverwrite(id);
+        if (!confirmed) {
+            return { success: false, error: 'Error al confirmar sobrescritura' };
+        }
+        
+        // Obtener la descarga actualizada de la BD
+        const updatedDownload = queueDatabase.getById(id);
+        if (!updatedDownload) {
+            return { success: false, error: 'Error obteniendo descarga actualizada' };
+        }
+        
+        // Agregar a la cola en memoria del DownloadManager si no está ya ahí
+        const inQueue = downloadManager.downloadQueue.some(d => d.id === id);
+        if (!inQueue) {
+            downloadManager.downloadQueue.push({
+                id: updatedDownload.id,
+                title: updatedDownload.title,
+                downloadPath: updatedDownload.downloadPath,
+                preserveStructure: updatedDownload.preserveStructure,
+                forceOverwrite: updatedDownload.forceOverwrite || true, // Asegurar que forceOverwrite esté activado
+                retryCount: updatedDownload.retryCount || 0,
+                addedAt: updatedDownload.createdAt,
+                queuePosition: updatedDownload.queuePosition,
+                priority: updatedDownload.priority || 1,
+                savePath: updatedDownload.savePath || null
+            });
+            log.info(`Descarga ${id} agregada a la cola en memoria después de confirmar sobrescritura`);
+        } else {
+            // Si ya está en la cola, actualizar forceOverwrite
+            const queueItem = downloadManager.downloadQueue.find(d => d.id === id);
+            if (queueItem) {
+                queueItem.forceOverwrite = true;
+            }
+        }
+        
+        // Notificar al frontend que la descarga está en cola
+        if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('download-progress', {
+                id,
+                state: 'queued',
+                title: updatedDownload.title,
+                progress: 0,
+                downloadedBytes: 0
+            });
+        }
+        
+        // Procesar la cola para iniciar la descarga con forceOverwrite
+        setImmediate(() => downloadManager.processQueue());
+        
+        return { success: true };
+    }));
+
+    ipcMain.handle('delete-download', createHandler('delete-download', async (event, downloadId) => {
+        // Validar ID de descarga
+        const validation = validateDownloadIdLegacy(downloadId);
+        if (!validation.valid) {
+            return { success: false, error: validation.error };
+        }
+        
+        const id = validation.data;
+        
+        // Verificar que la descarga existe
+        const dbDownload = queueDatabase.getById(id);
+        if (!dbDownload) {
+            return { success: false, error: 'Descarga no encontrada' };
+        }
+        
+        // Eliminar de la base de datos
+        const deleted = queueDatabase.deleteDownload(id);
+        if (!deleted) {
+            return { success: false, error: 'Error al eliminar descarga' };
+        }
+        
+        // Si está activa, cancelarla primero
+        const isActive = downloadManager.hasActiveDownload(id);
+        if (isActive) {
+            await downloadManager.cancelDownload(id);
+        }
+        
+        // Remover de la cola en memoria si está ahí
+        downloadManager.removeFromQueue(id);
+        
+        // Notificar al frontend que la descarga fue eliminada
+        if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('download-progress', {
+                id,
+                state: 'deleted'
+            });
+        }
+        
+        return { success: true };
     }));
 
     ipcMain.handle('get-download-stats', createHandler('get-download-stats', () => {

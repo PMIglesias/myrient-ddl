@@ -444,12 +444,44 @@ class DatabaseService {
      * @returns {Array<string>} Array con patrones de búsqueda
      */
     _prepareLikeTerms(term) {
-        const escaped = escapeLikeTerm(term);
-        return [
-            `${escaped}%`,      // Empieza con (mayor relevancia)
-            `% ${escaped}%`,   // Palabra completa (buena relevancia)
-            `%${escaped}%`     // Contiene (menor relevancia)
-        ];
+        // Limpiar término: remover sintaxis FTS que pueda haber quedado (asteriscos, comillas, operadores)
+        // Esto asegura que LIKE reciba un término limpio
+        let cleanTerm = term.trim()
+            .replace(/\*/g, '')  // Remover asteriscos de FTS
+            .replace(/^["']|["']$/g, '')  // Remover comillas al inicio/fin
+            .replace(/\s+(AND|OR|NOT)\s+/gi, ' ')  // Remover operadores FTS
+            .trim();
+        
+        // Si el término quedó vacío después de limpiar, usar el original
+        if (!cleanTerm) {
+            cleanTerm = term.trim();
+        }
+        
+        const escaped = escapeLikeTerm(cleanTerm);
+        
+        // Para términos con múltiples palabras, buscar todas las palabras en orden
+        const words = cleanTerm.split(/\s+/).filter(w => w.length > 0);
+        
+        if (words.length === 1) {
+            // Una sola palabra: usar patrones de relevancia
+            return [
+                `${escaped}%`,      // Empieza con (mayor relevancia) - ej: "Guit%"
+                `% ${escaped}%`,    // Palabra completa después de espacio (buena relevancia) - ej: "% Guit%"
+                `%${escaped}%`      // Contiene en cualquier lugar (menor relevancia) - ej: "%Guit%"
+            ];
+        } else {
+            // Múltiples palabras: buscar todas las palabras en orden
+            // Construir patrones que busquen todas las palabras
+            const allWordsEscaped = words.map(w => escapeLikeTerm(w));
+            const allWordsPattern = allWordsEscaped.join('%'); // ej: "Guitar%hero%"
+            
+            // Siempre retornar 3 patrones para compatibilidad con los statements SQL
+            return [
+                `${allWordsPattern}%`,      // Todas las palabras en orden, empieza con (mayor relevancia)
+                `%${allWordsPattern}%`,     // Todas las palabras en orden, contiene (buena relevancia)
+                `%${escaped}%`              // Término completo contiene (menor relevancia, fallback)
+            ];
+        }
     }
 
     /**

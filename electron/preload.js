@@ -35,6 +35,9 @@ const validInvokeChannels = [
     'pause-download',
     'resume-download',
     'cancel-download',
+    'retry-download',
+    'confirm-overwrite',
+    'delete-download',
     'get-download-stats',
     'get-queue-time-estimate',
     'clean-history',
@@ -176,6 +179,21 @@ const api = {
      * Cancela una descarga (elimina archivos)
      */
     cancelDownload: (downloadId) => safeInvoke('cancel-download', downloadId),
+
+    /**
+     * Reinicia una descarga cancelada o fallida
+     */
+    retryDownload: (downloadId) => safeInvoke('retry-download', downloadId),
+
+    /**
+     * Confirma sobrescritura de un archivo existente
+     */
+    confirmOverwrite: (downloadId) => safeInvoke('confirm-overwrite', downloadId),
+
+    /**
+     * Elimina una descarga de la base de datos
+     */
+    deleteDownload: (downloadId) => safeInvoke('delete-download', downloadId),
 
     /**
      * Obtiene estadísticas de descargas

@@ -104,6 +104,17 @@ async function initialize() {
         return;
     }
 
+    // Limpiar descargas mal etiquetadas (paused pero realmente completadas, fallidas, o muy antiguas)
+    log.info('Iniciando limpieza de descargas mal etiquetadas...');
+    const cleanupResult = queueDatabase.cleanupMislabeledDownloads(7); // 7 días como máximo
+    if (cleanupResult.corrected > 0) {
+        log.info(`Limpieza completada: ${cleanupResult.corrected} descargas corregidas (${cleanupResult.completed || 0} completadas, ${cleanupResult.failed || 0} fallidas, ${cleanupResult.cancelled || 0} canceladas)`);
+    } else if (cleanupResult.error) {
+        log.warn(`Error en limpieza: ${cleanupResult.error}`);
+    } else {
+        log.info('No se encontraron descargas mal etiquetadas para corregir');
+    }
+
     // Mostrar estadísticas de la cola
     const stats = queueDatabase.getStats();
     log.info('Estado de la cola SQLite:', {
@@ -147,18 +158,33 @@ async function initialize() {
             }
 
             // Marcar todas las descargas en cola como pausadas (estado de espera)
+            // EXCEPTO las que están en estado 'awaiting' (esperando confirmación de sobrescritura)
             // Esto permite al usuario decidir qué hacer con ellas
             if (queuedDownloads.length > 0) {
                 log.info(`Marcando ${queuedDownloads.length} descargas en cola como pausadas (en espera)...`);
                 queuedDownloads.forEach((download) => {
-                    queueDatabase.pauseDownload(download.id);
-                    if (mainWindow && !mainWindow.isDestroyed()) {
-                        mainWindow.webContents.send('download-progress', {
-                            id: download.id,
-                            state: 'paused',
-                            title: download.title,
-                            progress: download.progress || 0
-                        });
+                    // No pausar descargas que están esperando confirmación de sobrescritura
+                    if (download.state !== 'awaiting') {
+                        queueDatabase.pauseDownload(download.id);
+                        if (mainWindow && !mainWindow.isDestroyed()) {
+                            mainWindow.webContents.send('download-progress', {
+                                id: download.id,
+                                state: 'paused',
+                                title: download.title,
+                                progress: download.progress || 0
+                            });
+                        }
+                    } else {
+                        // Mantener estado 'awaiting' y notificar al frontend
+                        if (mainWindow && !mainWindow.isDestroyed()) {
+                            mainWindow.webContents.send('download-progress', {
+                                id: download.id,
+                                state: 'awaiting-confirmation',
+                                title: download.title,
+                                progress: download.progress || 0,
+                                savePath: download.savePath
+                            });
+                        }
                     }
                 });
             }
@@ -198,10 +224,33 @@ async function initialize() {
             }
         }
 
-        // Enviar historial completo al frontend
-        const allDownloads = queueDatabase.getAll();
-        if (allDownloads.length > 0) {
-            mainWindow.webContents.send('downloads-restored', allDownloads);
+        // Enviar solo descargas relevantes al frontend (pausadas, en cola, activas, awaiting)
+        // No enviar descargas completadas o fallidas antiguas para evitar confusión
+        // Nota: pausedDownloads y queuedDownloads ya fueron obtenidos arriba, pero pueden haber cambiado
+        // después de pausar las que estaban en cola, así que las obtenemos de nuevo
+        const allPausedNow = queueDatabase.getPaused();
+        const allQueuedNow = queueDatabase.getQueued();
+        const activeDownloads = queueDatabase.getActive();
+        const awaitingDownloads = queueDatabase.getByState('awaiting');
+        
+        // Combinar todas las descargas relevantes y eliminar duplicados por ID
+        const allRelevant = [
+            ...allPausedNow,
+            ...allQueuedNow,
+            ...activeDownloads,
+            ...awaitingDownloads
+        ];
+        
+        // Eliminar duplicados usando un Map
+        const uniqueDownloads = new Map();
+        allRelevant.forEach(download => {
+            uniqueDownloads.set(download.id, download);
+        });
+        
+        const relevantDownloads = Array.from(uniqueDownloads.values());
+        
+        if (relevantDownloads.length > 0) {
+            mainWindow.webContents.send('downloads-restored', relevantDownloads);
         }
     });
 
@@ -275,30 +324,83 @@ function cleanup() {
     log.separator('LIMPIANDO RECURSOS');
 
     // [BLOQUE 1] Guardar estado de descargas activas en SQLite
+    // IMPORTANTE: Solo cambiar el estado de descargas que realmente están en estado 'downloading'
+    // Respetar los estados pausadas, completadas, canceladas, etc. que el usuario haya establecido
+    
     // Guardar descargas simples activas
     const activeDownloads = downloadManager.activeDownloads;
     if (activeDownloads && activeDownloads.size > 0) {
-        log.info(`Guardando estado de ${activeDownloads.size} descargas simples activas...`);
+        log.info(`Verificando estado de ${activeDownloads.size} descargas simples activas...`);
+        
+        let queuedCount = 0;
+        let skippedCount = 0;
         
         activeDownloads.forEach((download, id) => {
-            queueDatabase.updateDownload(id, {
-                state: 'queued', // Volver a encolar para reintentar
-                lastError: 'Aplicación cerrada durante la descarga'
-            });
+            // Verificar el estado actual en la base de datos
+            const dbDownload = queueDatabase.getById(id);
+            
+            if (!dbDownload) {
+                // La descarga fue eliminada de la BD, no hacer nada
+                log.debug(`Descarga ${id} no encontrada en BD, omitiendo`);
+                skippedCount++;
+                return;
+            }
+            
+            // Solo cambiar a 'queued' si realmente estaba en estado 'downloading'
+            // Respetar estados como 'paused', 'completed', 'cancelled', etc.
+            if (dbDownload.state === 'downloading') {
+                queueDatabase.updateDownload(id, {
+                    state: 'queued', // Volver a encolar para reintentar
+                    lastError: 'Aplicación cerrada durante la descarga'
+                });
+                queuedCount++;
+            } else {
+                log.debug(`Descarga ${id} en estado '${dbDownload.state}', manteniendo estado`);
+                skippedCount++;
+            }
         });
+        
+        if (queuedCount > 0 || skippedCount > 0) {
+            log.info(`Descargas simples: ${queuedCount} reencoladas, ${skippedCount} omitidas (estados respetados)`);
+        }
     }
     
     // Guardar descargas fragmentadas activas
     const chunkedDownloads = downloadManager.chunkedDownloads;
     if (chunkedDownloads && chunkedDownloads.size > 0) {
-        log.info(`Guardando estado de ${chunkedDownloads.size} descargas fragmentadas activas...`);
+        log.info(`Verificando estado de ${chunkedDownloads.size} descargas fragmentadas activas...`);
+        
+        let queuedCount = 0;
+        let skippedCount = 0;
         
         chunkedDownloads.forEach((chunked, id) => {
-            queueDatabase.updateDownload(id, {
-                state: 'queued', // Volver a encolar para reintentar
-                lastError: 'Aplicación cerrada durante la descarga'
-            });
+            // Verificar el estado actual en la base de datos
+            const dbDownload = queueDatabase.getById(id);
+            
+            if (!dbDownload) {
+                // La descarga fue eliminada de la BD, no hacer nada
+                log.debug(`Descarga fragmentada ${id} no encontrada en BD, omitiendo`);
+                skippedCount++;
+                return;
+            }
+            
+            // Solo cambiar a 'queued' si realmente estaba en estado 'downloading'
+            // Respetar estados como 'paused', 'completed', 'cancelled', etc.
+            if (dbDownload.state === 'downloading') {
+                queueDatabase.updateDownload(id, {
+                    state: 'queued', // Volver a encolar para reintentar
+                    lastError: 'Aplicación cerrada durante la descarga'
+                });
+                queuedCount++;
+            } else {
+                log.debug(`Descarga fragmentada ${id} en estado '${dbDownload.state}', manteniendo estado`);
+                skippedCount++;
+            }
         });
+        
+        if (queuedCount > 0 || skippedCount > 0) {
+            log.info(`Descargas fragmentadas: ${queuedCount} reencoladas, ${skippedCount} omitidas (estados respetados)`);
+        }
     }
     
     log.info('Estado de descargas guardado en SQLite');

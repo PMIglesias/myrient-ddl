@@ -37,6 +37,7 @@ export function useVirtualScroll(options = {}) {
   const containerHeight = ref(0);
   const measuredRowHeight = ref(itemHeight);
   const isMeasuring = ref(false);
+  const hasStableMeasurement = ref(false); // Flag para indicar si ya tenemos una medición estable
 
   // Configuración
   const ROW_HEIGHT_ESTIMATE = itemHeight;
@@ -106,20 +107,15 @@ export function useVirtualScroll(options = {}) {
 
   // Throttle para eventos de scroll (mejorar rendimiento)
   let scrollTimeout = null;
+
   const handleScroll = () => {
     if (!containerRef.value || !shouldVirtualize.value) return;
 
     // Actualizar scrollTop inmediatamente para respuesta rápida
     scrollTop.value = containerRef.value.scrollTop;
 
-    // Medir altura de filas periódicamente durante el scroll
-    if (!isMeasuring.value) {
-      isMeasuring.value = true;
-      measureRowHeight();
-      setTimeout(() => {
-        isMeasuring.value = false;
-      }, 100);
-    }
+    // NO medir altura durante el scroll para evitar cambios erráticos
+    // La medición se hace solo al inicio y cuando cambian los items o el tamaño del contenedor
   };
 
   // Medir altura real de las filas
@@ -130,15 +126,55 @@ export function useVirtualScroll(options = {}) {
       const container = containerRef.value;
       if (!container) return;
 
-      // Buscar primera fila visible
-      const firstRow = container.querySelector('[data-virtual-index]');
-      if (firstRow) {
-        const rect = firstRow.getBoundingClientRect();
+      // Buscar múltiples filas visibles para obtener un promedio más preciso
+      const rows = container.querySelectorAll('[data-virtual-index]');
+      if (rows.length === 0) return;
+
+      // Calcular altura promedio de las filas visibles (mínimo 3, máximo 10)
+      const rowsToMeasure = Math.min(Math.max(3, rows.length), 10);
+      let totalHeight = 0;
+      let validMeasurements = 0;
+
+      for (let i = 0; i < rowsToMeasure && i < rows.length; i++) {
+        const rect = rows[i].getBoundingClientRect();
         const height = rect.height;
         
-        if (height > 0 && Math.abs(height - measuredRowHeight.value) > 2) {
-          // Solo actualizar si la diferencia es significativa (>2px)
-          measuredRowHeight.value = height;
+        // Ignorar medidas inválidas o extremas (fuera de rango razonable)
+        if (height > 0 && height < 200 && height >= ROW_HEIGHT_ESTIMATE * 0.5) {
+          totalHeight += height;
+          validMeasurements++;
+        }
+      }
+
+      // Solo actualizar si tenemos suficientes mediciones válidas
+      if (validMeasurements >= 2) {
+        const averageHeight = totalHeight / validMeasurements;
+        
+        // Solo actualizar si la diferencia es significativa y la nueva altura es razonable
+        const heightDifference = Math.abs(averageHeight - measuredRowHeight.value);
+        
+        // Si aún no tenemos una medición estable, ser más permisivo
+        if (!hasStableMeasurement.value) {
+          // Primera medición: aceptar si está dentro de un rango razonable
+          if (averageHeight >= ROW_HEIGHT_ESTIMATE * 0.5 && 
+              averageHeight <= ROW_HEIGHT_ESTIMATE * 2) {
+            measuredRowHeight.value = Math.round(averageHeight);
+            hasStableMeasurement.value = true;
+          }
+        } else {
+          // Mediciones posteriores: ser más conservador
+          // Solo actualizar si:
+          // 1. La nueva altura es menor o igual (evitar crecimiento)
+          // 2. O la diferencia es muy grande (> 15px) y la nueva altura es razonable
+          const shouldUpdate = 
+            (averageHeight <= measuredRowHeight.value && heightDifference > 3) ||
+            (heightDifference > 15 && 
+             averageHeight >= ROW_HEIGHT_ESTIMATE * 0.5 && 
+             averageHeight <= ROW_HEIGHT_ESTIMATE * 2);
+          
+          if (shouldUpdate) {
+            measuredRowHeight.value = Math.round(averageHeight);
+          }
         }
       }
     });
@@ -182,6 +218,8 @@ export function useVirtualScroll(options = {}) {
     // Medir altura cuando cambien los items
     watch(() => items.value.length, () => {
       if (shouldVirtualize.value) {
+        // Resetear medición estable cuando cambian los items
+        hasStableMeasurement.value = false;
         nextTick(() => {
           measureRowHeight();
         });

@@ -180,6 +180,9 @@
                 <button @click="$emit('cancel-overwrite', download.id)" class="btn-action btn-cancel" title="Cancelar descarga">
                   <span class="btn-icon">✗</span>
                 </button>
+                <button @click="$emit('remove', download.id)" class="btn-action btn-delete" title="Eliminar de la lista">
+                  <span class="btn-icon">🗑️</span>
+                </button>
               </template>
               
               <!-- Descargando activamente -->
@@ -409,34 +412,27 @@ const shouldShowChunkProgress = (download) => {
     return false;
   }
   
-  // Verificar que sea descarga chunked o esté fusionando
-  const isChunked = download.chunked || download.merging;
-  if (!isChunked) {
-    return false;
+  // Mostrar si está fusionando (mergeProgress está definido o merging es true)
+  if (download.merging || download.mergeProgress !== undefined) {
+    return true;
   }
   
-  // Verificar que tenga información de chunks (totalChunks o chunkProgress)
-  // Ser más permisivo: mostrar si hay totalChunks > 0 O si hay chunkProgress (incluso vacío)
-  const hasTotalChunks = download.totalChunks && download.totalChunks > 0;
-  const hasChunkProgress = download.chunkProgress && Array.isArray(download.chunkProgress);
-  const hasChunkInfo = hasTotalChunks || hasChunkProgress;
-  
-  // Si no se muestra, log para debug
-  if (!hasChunkInfo) {
-    console.debug('[DownloadsPanel] ChunkProgress no se muestra:', {
-      id: download.id,
-      showChunkProgress: props.showChunkProgress,
-      chunked: download.chunked,
-      merging: download.merging,
-      totalChunks: download.totalChunks,
-      chunkProgress: download.chunkProgress,
-      hasTotalChunks,
-      hasChunkProgress,
-      hasChunkInfo
-    });
+  // Mostrar si hay totalChunks > 0 (indica que es una descarga chunked)
+  if (download.totalChunks && download.totalChunks > 0) {
+    return true;
   }
   
-  return hasChunkInfo;
+  // Mostrar si hay chunkProgress con datos
+  if (download.chunkProgress && Array.isArray(download.chunkProgress) && download.chunkProgress.length > 0) {
+    return true;
+  }
+  
+  // Mostrar si chunked está explícitamente en true
+  if (download.chunked) {
+    return true;
+  }
+  
+  return false;
 };
 
 const formatDate = (timestamp) => {
@@ -915,6 +911,11 @@ onUnmounted(() => {
   flex-direction: column;
   gap: 8px;
   width: 100%;
+  min-height: fit-content;
+}
+
+.process-content > * {
+  flex-shrink: 0;
 }
 
 .progress-container {

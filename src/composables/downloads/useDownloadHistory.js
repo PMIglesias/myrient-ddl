@@ -213,7 +213,21 @@ export function useDownloadHistory(settings = null) {
     /**
      * Elimina una descarga específica del historial
      */
-    const removeFromHistory = (downloadId) => {
+    const removeFromHistory = async (downloadId) => {
+        try {
+            // Llamar al backend para eliminar de la base de datos
+            const result = await api.deleteDownload(downloadId);
+            
+            if (!result.success) {
+                console.error(`[removeFromHistory] Error eliminando descarga ${downloadId}:`, result.error);
+                // Continuar eliminando del frontend aunque falle en el backend
+            }
+        } catch (error) {
+            console.error('[removeFromHistory] Error llamando al backend:', error);
+            // Continuar eliminando del frontend aunque falle
+        }
+        
+        // Eliminar del estado local
         delete downloads.value[downloadId];
         downloadQueue.value = downloadQueue.value.filter(d => d.id !== downloadId);
         speedStats.value.delete(downloadId);

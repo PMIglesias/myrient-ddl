@@ -103,39 +103,53 @@
         </div>
       </template>
 
-      <!-- Resultados de BÃºsqueda -->
+      <!-- Resultados de Búsqueda -->
       <template v-else>
         <div id="search-results">
-          <h2>Resultados de bÃºsqueda</h2>
+          <h2>Resultados de búsqueda</h2>
 
-          <!-- Carpetas encontradas -->
-          <FolderGrid
-            v-if="searchFolders.length > 0"
-            :folders="searchFolders"
-            title="Carpetas"
-            :favorite-ids="favoriteIds"
-            :is-search-result="true"
-            @navigate="navigateToNode"
-            @toggle-favorite="toggleFavorite"
-          />
+          <!-- Indicador de búsqueda en progreso -->
+          <div v-if="isSearching" class="search-loading">
+            <div class="search-spinner"></div>
+            <p>Buscando...</p>
+          </div>
 
-          <!-- Archivos encontrados -->
-          <FileTable
-            v-if="searchFiles.length > 0"
-            :files="searchFiles"
-            title="Archivos"
-            :selected-files="selectedSearchFiles"
-            :downloads="downloads"
-            :sortable="true"
-            :sort-field="sortField"
-            :sort-direction="sortDirection"
-            :show-path="true"
-            @download="download"
-            @download-selected="downloadSelectedSearchFiles"
-            @toggle-select="toggleSearchFileSelection"
-            @toggle-select-all="toggleSelectAllSearch"
-            @sort="setSortField"
-          />
+          <!-- Resultados (solo mostrar si no está buscando) -->
+          <template v-else>
+            <!-- Carpetas encontradas -->
+            <FolderGrid
+              v-if="searchFolders.length > 0"
+              :folders="searchFolders"
+              title="Carpetas"
+              :favorite-ids="favoriteIds"
+              :is-search-result="true"
+              @navigate="navigateToNode"
+              @toggle-favorite="toggleFavorite"
+            />
+
+            <!-- Archivos encontrados -->
+            <FileTable
+              v-if="searchFiles.length > 0"
+              :files="searchFiles"
+              title="Archivos"
+              :selected-files="selectedSearchFiles"
+              :downloads="downloads"
+              :sortable="true"
+              :sort-field="sortField"
+              :sort-direction="sortDirection"
+              :show-path="true"
+              @download="download"
+              @download-selected="downloadSelectedSearchFiles"
+              @toggle-select="toggleSearchFileSelection"
+              @toggle-select-all="toggleSelectAllSearch"
+              @sort="setSortField"
+            />
+
+            <!-- Sin resultados -->
+            <div v-if="!isSearching && searchFolders.length === 0 && searchFiles.length === 0" class="search-no-results">
+              <p>No se encontraron resultados para "{{ searchTerm }}"</p>
+            </div>
+          </template>
         </div>
       </template>
     </div>
@@ -263,12 +277,20 @@ const {
 const navigateToNode = async (node) => {
   showingFavorites.value = false;
   showingDownloads.value = false;
+  // Limpiar búsqueda si hay resultados activos (navegar sale del modo búsqueda)
+  if (searchResults.value.length > 0) {
+    clearSearch();
+  }
   await navigateToNodeOriginal(node);
 };
 
 const goToRoot = async () => {
   showingFavorites.value = false;
   showingDownloads.value = false;
+  // Limpiar búsqueda si hay resultados activos
+  if (searchResults.value.length > 0) {
+    clearSearch();
+  }
   await goToRootOriginal();
 };
 
@@ -281,6 +303,7 @@ const goBack = async () => {
 const {
   searchTerm,
   searchResults,
+  isSearching,
   sortField,
   sortDirection,
   searchFolders,

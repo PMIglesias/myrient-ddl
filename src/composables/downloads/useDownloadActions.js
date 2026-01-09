@@ -194,43 +194,64 @@ export function useDownloadActions(processDownloadQueueFn, limitHistoryInMemoryF
     /**
      * Reintenta una descarga fallida o cancelada
      */
-    const retryDownload = (downloadId) => {
+    const retryDownload = async (downloadId) => {
         const dl = downloads.value[downloadId];
-        if (!dl) return;
+        if (!dl) {
+            console.debug(`[useDownloads] No se puede reiniciar descarga ${downloadId}: no encontrada`);
+            return;
+        }
 
-        // Solo reintentar si está en estado de error o cancelada
-        if (dl.state === 'interrupted' || dl.state === 'cancelled') {
-            try {
+        // Verificar que está en un estado válido para reiniciar
+        // NO permitir reiniciar descargas completadas
+        if (dl.state === 'completed' || dl.queueStatus === 'completed') {
+            console.debug(`[useDownloads] No se puede reiniciar descarga ${downloadId}: ya está completada`);
+            return;
+        }
+        
+        const validStates = ['cancelled', 'interrupted', 'failed', 'waiting'];
+        const validQueueStatuses = ['error', 'cancelled'];
+        if (!validStates.includes(dl.state) && !validQueueStatuses.includes(dl.queueStatus)) {
+            console.debug(`[useDownloads] No se puede reiniciar descarga ${downloadId}: estado ${dl.state || dl.queueStatus}`);
+            return;
+        }
+
+        // Verificar que no está en proceso de iniciarse
+        if (startingDownloads.has(downloadId)) {
+            console.debug(`[useDownloads] Descarga ${downloadId} ya está iniciándose`);
+            return;
+        }
+
+        // Verificar que no está ya en cola
+        if (downloadQueue.value.some(d => d.id === downloadId && d.status === 'queued')) {
+            console.debug(`[useDownloads] Descarga ${downloadId} ya está en cola`);
+            return;
+        }
+
+        try {
+            const result = await api.retryDownload(downloadId);
+            if (result.success) {
                 // Actualizar estado local
                 dl.state = 'queued';
                 dl.percent = 0;
+                dl.downloadedBytes = 0;
                 delete dl.error;
 
-                downloadQueue.value.push({
-                    id: downloadId,
-                    title: dl.title,
-                    status: 'queued',
-                    addedAt: Date.now()
-                });
+                // Asegurarse de que está en la cola
+                if (!downloadQueue.value.some(d => d.id === downloadId)) {
+                    downloadQueue.value.push({
+                        id: downloadId,
+                        title: dl.title,
+                        status: 'queued',
+                        addedAt: Date.now()
+                    });
+                }
 
                 if (processDownloadQueueFn) processDownloadQueueFn();
-            } catch (error) {
-                console.error('[useDownloads] Error reiniciando descarga:', error);
+            } else {
+                console.error(`[useDownloads] Error reiniciando descarga ${downloadId}:`, result.error);
             }
-        } else {
-            // Para descargas con error, simplemente agregar a la cola
-            dl.state = 'queued';
-            dl.percent = 0;
-            delete dl.error;
-
-            downloadQueue.value.push({
-                id: downloadId,
-                title: dl.title,
-                status: 'queued',
-                addedAt: Date.now()
-            });
-
-            if (processDownloadQueueFn) processDownloadQueueFn();
+        } catch (error) {
+            console.error('[useDownloads] Error reiniciando descarga:', error);
         }
     };
 

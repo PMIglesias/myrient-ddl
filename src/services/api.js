@@ -196,6 +196,54 @@ export const cancelDownload = async (downloadId) => {
 };
 
 /**
+ * Reinicia una descarga cancelada o fallida
+ * @param {number} downloadId - ID de la descarga
+ */
+export const retryDownload = async (downloadId) => {
+    const api = getApi();
+    if (!api) return { success: false, error: 'API no disponible' };
+    
+    try {
+        return await api.retryDownload(downloadId);
+    } catch (error) {
+        console.error('[API] Error reiniciando descarga:', error);
+        return { success: false, error: error.message };
+    }
+};
+
+/**
+ * Confirma sobrescritura de un archivo existente
+ * @param {number} downloadId - ID de la descarga
+ */
+export const confirmOverwrite = async (downloadId) => {
+    const api = getApi();
+    if (!api) return { success: false, error: 'API no disponible' };
+    
+    try {
+        return await api.confirmOverwrite(downloadId);
+    } catch (error) {
+        console.error('[API] Error confirmando sobrescritura:', error);
+        return { success: false, error: error.message };
+    }
+};
+
+/**
+ * Elimina una descarga de la base de datos
+ * @param {number} downloadId - ID de la descarga
+ */
+export const deleteDownload = async (downloadId) => {
+    const api = getApi();
+    if (!api) return { success: false, error: 'API no disponible' };
+    
+    try {
+        return await api.deleteDownload(downloadId);
+    } catch (error) {
+        console.error('[API] Error eliminando descarga:', error);
+        return { success: false, error: error.message };
+    }
+};
+
+/**
  * Obtiene estadísticas de descargas
  */
 export const getDownloadStats = async () => {
@@ -373,6 +421,9 @@ export default {
     pauseDownload,
     resumeDownload,
     cancelDownload,
+    retryDownload,
+    confirmOverwrite,
+    deleteDownload,
     getDownloadStats,
     cleanHistory,
     

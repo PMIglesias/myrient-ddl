@@ -85,15 +85,27 @@ const props = defineProps({
 
 // Determinar si se debe mostrar el componente
 const shouldShow = computed(() => {
-  if (!props.chunked) return false;
+  // Mostrar si está fusionando (mergeProgress está definido)
+  if (props.mergeProgress !== undefined) {
+    return true;
+  }
   
-  // Mostrar si hay totalChunks o si hay chunkProgress (incluso si está vacío, puede estar inicializándose)
-  const hasTotalChunks = props.totalChunks && props.totalChunks > 0;
-  const hasChunkProgress = props.chunkProgress && Array.isArray(props.chunkProgress);
-  // También mostrar si está fusionando (mergeProgress está definido)
-  const isMerging = props.mergeProgress !== undefined;
+  // Mostrar si hay totalChunks > 0 (indica que es una descarga chunked)
+  if (props.totalChunks && props.totalChunks > 0) {
+    return true;
+  }
   
-  return hasTotalChunks || hasChunkProgress || isMerging;
+  // Mostrar si hay chunkProgress con datos (incluso si está vacío, puede estar inicializándose)
+  if (props.chunkProgress && Array.isArray(props.chunkProgress) && props.chunkProgress.length > 0) {
+    return true;
+  }
+  
+  // Mostrar si chunked está explícitamente en true
+  if (props.chunked) {
+    return true;
+  }
+  
+  return false;
 });
 
 // Ordenar chunks por índice
@@ -155,15 +167,22 @@ const formatSpeed = (speed) => {
 <style scoped>
 .chunk-progress-container {
   margin-top: 8px;
-  padding: 8px;
-  background: rgba(0, 0, 0, 0.2);
-  border-radius: 4px;
+  padding: 10px;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
   font-size: 11px;
+  width: 100%;
+  box-sizing: border-box;
+  display: block;
+  visibility: visible;
+  opacity: 1;
 }
 
 .chunk-summary {
-  margin-bottom: 6px;
-  color: #999;
+  margin-bottom: 8px;
+  color: #ccc;
+  font-size: 12px;
 }
 
 .chunk-stats {
@@ -178,22 +197,24 @@ const formatSpeed = (speed) => {
 .chunks-visualization {
   display: flex;
   flex-wrap: wrap;
-  gap: 2px;
-  margin-top: 6px;
+  gap: 3px;
+  margin-top: 8px;
+  min-height: 28px;
 }
 
 .chunk-item {
   position: relative;
-  width: 24px;
-  height: 24px;
+  width: 26px;
+  height: 26px;
   background: #2a2a2a;
-  border: 1px solid #444;
-  border-radius: 3px;
+  border: 1px solid #555;
+  border-radius: 4px;
   overflow: hidden;
   display: flex;
   align-items: center;
   justify-content: center;
   transition: all 0.2s ease;
+  flex-shrink: 0;
 }
 
 .chunk-item:hover {

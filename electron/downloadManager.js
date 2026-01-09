@@ -90,6 +90,13 @@ class DownloadManager {
         this.fileService = serviceManager.getFileService();
         this.queueService = serviceManager.getQueueService();
         
+        // Log para verificar que los servicios estén disponibles
+        log.info('[DownloadManager] Servicios inicializados:', {
+            downloadService: !!this.downloadService,
+            fileService: !!this.fileService,
+            queueService: !!this.queueService
+        });
+        
         // Si QueueService está disponible, actualizar maxConcurrent desde el servicio
         if (this.queueService) {
             // QueueService ya tiene maxConcurrent configurado
@@ -336,7 +343,7 @@ class DownloadManager {
 
         try {
             // Calcular estadísticas usando QueueService si está disponible
-            const totalActive = this.activeDownloads.size + this.chunkedDownloads.size;
+            let totalActive = this.activeDownloads.size + this.chunkedDownloads.size;
             let queueStats = null;
             
             if (this.queueService) {
@@ -552,6 +559,18 @@ class DownloadManager {
             log.error('startDownload: Parámetros inválidos', { id, title });
             return;
         }
+        
+        // Verificar que los servicios estén disponibles
+        if (!this.downloadService) {
+            log.warn('[DownloadManager] DownloadService no está disponible en startDownload, intentando inicializar...');
+            // Intentar obtener el servicio nuevamente
+            this.downloadService = serviceManager.getDownloadService();
+            if (!this.downloadService) {
+                log.error('[DownloadManager] DownloadService no disponible después de intentar obtenerlo');
+            } else {
+                log.info('[DownloadManager] DownloadService obtenido exitosamente');
+            }
+        }
 
         // Verificar duplicados
         const existingDownload = this.getActiveDownload(id);
@@ -647,6 +666,10 @@ class DownloadManager {
                 if (shouldConfirm) {
                     log.info('Solicitando confirmación para:', title);
                     this.deleteActiveDownload(id);
+                    
+                    // Actualizar estado en la base de datos a 'awaiting'
+                    queueDatabase.setState(id, 'awaiting');
+                    
                     this._sendProgress({
                         id,
                         title,
@@ -680,15 +703,50 @@ class DownloadManager {
             // =====================================
             // DECISIÍ"N: Simple vs Fragmentada usando DownloadService
             // =====================================
-            const useChunked = await this.downloadService.shouldUseChunkedDownload(downloadUrl, expectedFileSize);
+            let useChunked = false;
+            
+            if (!this.downloadService) {
+                log.warn('[DownloadManager] DownloadService no está disponible, usando descarga simple');
+            } else {
+                try {
+                    log.info(`[DownloadManager] Llamando shouldUseChunkedDownload: url=${!!downloadUrl}, size=${this._formatBytes(expectedFileSize)}`);
+                    useChunked = await this.downloadService.shouldUseChunkedDownload(downloadUrl, expectedFileSize);
+                    log.info(`[DownloadManager] Resultado de shouldUseChunkedDownload: ${useChunked}`);
+                } catch (error) {
+                    log.error('[DownloadManager] Error al llamar shouldUseChunkedDownload:', error);
+                    useChunked = false;
+                }
+            }
+            
+            // Si DownloadService dice que debe usarse chunked, verificar soporte de Range requests
+            if (useChunked) {
+                const chunkedConfig = this.chunkedConfig;
+                if (chunkedConfig.checkRangeSupport !== false) {
+                    log.info(`[DownloadManager] Verificando soporte de Range requests para: ${title}`);
+                    try {
+                        const rangeCheck = await ChunkedDownloader.checkRangeSupport(downloadUrl);
+                        
+                        if (!rangeCheck.supported) {
+                            log.warn(`[DownloadManager] Servidor no soporta Range requests, usando descarga simple`);
+                            log.info(`[DownloadManager] Range check result:`, rangeCheck);
+                            useChunked = false;
+                        } else {
+                            log.info(`[DownloadManager] Servidor soporta Range requests ✓`);
+                        }
+                    } catch (error) {
+                        log.warn(`[DownloadManager] Error verificando Range support, usando descarga simple:`, error.message);
+                        useChunked = false;
+                    }
+                }
+            }
             
             if (useChunked) {
-                log.info(`Usando descarga FRAGMENTADA para ${title} (${this._formatBytes(expectedFileSize)})`);
+                log.info(`[DownloadManager] Usando descarga FRAGMENTADA para ${title} (${this._formatBytes(expectedFileSize)})`);
                 await this._executeChunkedDownload({
                     id, title, downloadUrl, savePath, expectedFileSize, forceOverwrite
                 });
             } else {
-                log.info(`Usando descarga SIMPLE para ${title} (${this._formatBytes(expectedFileSize)})`);
+                log.info(`[DownloadManager] Usando descarga SIMPLE para ${title} (${this._formatBytes(expectedFileSize)})`);
                 await this._executeDownload({
                     id, title, downloadUrl, savePath, expectedFileSize, forceOverwrite
                 });
