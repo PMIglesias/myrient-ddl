@@ -1,42 +1,24 @@
-/**
- * Módulo de base de datos SQLite
- * Maneja la conexión y queries a la base de datos de Myrient
- * 
- * OPTIMIZACIONES FTS (Full-Text Search):
- * ======================================
- * 
- * 1. DETECCIÓN MEJORADA DE FTS:
- *    - Detecta automáticamente tablas FTS5/FTS4 existentes
- *    - Extrae información de columnas indexadas
- *    - Fallback a LIKE si FTS no está disponible
- * 
- * 2. QUERIES FTS OPTIMIZADAS:
- *    - Usa bm25() para ranking en FTS5 (mejor relevancia)
- *    - INNER JOIN en lugar de JOIN para mejor performance
- *    - Paginación nativa (LIMIT/OFFSET) para grandes resultados
- *    - Queries separadas con/sin paginación para optimizar
- * 
- * 3. PREPARACIÓN DE TÉRMINOS FTS:
- *    - Escape correcto de caracteres especiales (", ', *, NOT, AND, OR)
- *    - Soporte para búsqueda de frases exactas ("palabra exacta")
- *    - Wildcard automático al final (palabra*)
- *    - Opción para usar AND (más relevante) o OR (más resultados)
- * 
- * 4. QUERIES LIKE OPTIMIZADAS:
- *    - Ranking por relevancia (empieza con > palabra completa > contiene)
- *    - Paginación nativa
- *    - Uso eficiente de índices existentes
- * 
- * 5. OPTIMIZACIONES GENERALES:
- *    - Uso de .pluck() para queries que retornan un solo valor
- *    - Prepared statements reutilizables
- *    - Queries optimizadas para PRIMARY KEY lookups
- * 
- * RENDIMIENTO ESPERADO:
- * - Búsquedas FTS5: 10-100x más rápidas que LIKE en DBs grandes (>1GB)
- * - Paginación: Reduce memoria y tiempo de respuesta
- * - Ranking bm25(): Resultados más relevantes primero
- */
+// Módulo de gestión de base de datos SQLite para el catálogo de Myrient
+// Maneja conexión, queries optimizadas, y búsquedas Full-Text Search (FTS)
+// 
+// OPTIMIZACIONES FTS (Full-Text Search):
+// - Detecta automáticamente tablas FTS5/FTS4 y extrae columnas indexadas
+// - Usa bm25() para ranking mejorado de relevancia en FTS5
+// - Preparación inteligente de términos con escape de caracteres especiales
+// - Soporte para búsquedas de frases exactas y wildcards automáticos
+// - Fallback automático a LIKE si FTS no está disponible
+// 
+// OPTIMIZACIONES DE QUERIES:
+// - Prepared statements reutilizables para mejor rendimiento
+// - Paginación nativa (LIMIT/OFFSET) para grandes resultados
+// - Ranking por relevancia en búsquedas LIKE (empieza con > completa > contiene)
+// - Uso de .pluck() para queries que retornan un solo valor
+// - Queries optimizadas para PRIMARY KEY lookups
+// 
+// RENDIMIENTO:
+// - Búsquedas FTS5: 10-100x más rápidas que LIKE en bases de datos grandes (>1GB)
+// - Paginación reduce uso de memoria y tiempo de respuesta
+// - Ranking bm25() ordena resultados más relevantes primero
 
 const Database = require('better-sqlite3');
 const fs = require('fs');
@@ -46,7 +28,7 @@ const { app, dialog, BrowserWindow } = require('electron');
 const config = require('./config');
 const { logger, escapeLikeTerm } = require('./utils');
 
-// log con scope
+// Logger con scope específico para este módulo
 const log = logger.child('Database');
 
 class DatabaseService {
@@ -55,15 +37,16 @@ class DatabaseService {
         this.statements = null;
     }
 
-    /**
-     * Inicializa la base de datos
-     * el returns {Promise<boolean>} da true si se inicializó correctamente la wea de base de datos
-     */
+    // Inicializa la conexión a la base de datos SQLite de Myrient
+    // Si el archivo .db no existe pero existe un .7z, extrae la base de datos automáticamente
+    // Configura la base de datos como solo lectura y prepara todos los statements necesarios
+    // Retorna: Promise<boolean> - true si la inicialización fue exitosa, false en caso de error
     async initialize() {
         const endInit = logger.startOperation('Inicialización de base de datos');
         const { dbPath, compressed7zPath } = config.paths;
 
-        // Si no existe el .db pero existe el .7z, extraer
+        // Si el archivo .db no existe pero existe un archivo .7z comprimido, extraerlo automáticamente
+        // Esto permite distribuir la base de datos comprimida para reducir el tamaño de la aplicación
         if (!fs.existsSync(dbPath) && fs.existsSync(compressed7zPath)) {
             log.info('Base de datos no encontrada, extrayendo desde .7z...');
 
@@ -71,6 +54,7 @@ class DatabaseService {
                 await this._extractDatabase();
                 log.info('Extracción completada, verificando archivo...');
 
+                // Verificar que la extracción produjo el archivo esperado
                 if (!fs.existsSync(dbPath)) {
                     this._showError(
                         'Error de Extracción',
@@ -88,7 +72,7 @@ class DatabaseService {
             }
         }
 
-        // Verificar que existe el archivo
+        // Verificar que el archivo de base de datos existe antes de intentar conectarse
         if (!fs.existsSync(dbPath)) {
             this._showError(
                 'Error de Base de Datos',
@@ -97,7 +81,9 @@ class DatabaseService {
             return false;
         }
 
-        // Conectar a la base de datos
+        // Establecer conexión a la base de datos SQLite en modo solo lectura
+        // readonly: true previene modificaciones accidentales a la base de datos
+        // fileMustExist: true garantiza que la base de datos existe antes de conectar
         try {
             this.db = new Database(dbPath, { readonly: true, fileMustExist: true });
             this._prepareStatements();
@@ -114,13 +100,13 @@ class DatabaseService {
         }
     }
 
-    /**
-     * Verifica si existe una tabla FTS disponible y obtiene información detallada
-     * @returns {Object|null} Objeto con nombre de tabla, tipo y columnas indexadas
-     */
+    // Detecta si existe una tabla Full-Text Search (FTS5 o FTS4) en la base de datos
+    // Extrae información sobre el nombre de la tabla, tipo (FTS5/FTS4), y columnas indexadas
+    // Esta información se usa para optimizar las búsquedas usando FTS en lugar de LIKE
+    // Retorna: Objeto con nombre de tabla, tipo (FTS5/FTS4), y array de columnas indexadas, o null si no hay FTS
     _detectFTS() {
         try {
-            // Verificar si existe una tabla FTS5 (más común y mejor)
+            // Buscar tablas FTS5 primero (más moderno y mejor rendimiento que FTS4)
             const fts5Tables = this.db.prepare(`
                 SELECT name, sql FROM sqlite_master 
                 WHERE type='table' 
@@ -799,9 +785,8 @@ class DatabaseService {
         }
     }
 
-    /**
-     * Cierra la puta conexión a la base de datos
-     */
+    // Cierra la conexión a la base de datos y libera todos los recursos asociados
+    // Limpia los prepared statements y marca la conexión como cerrada
     close() {
         if (this.db) {
             this.db.close();
@@ -811,9 +796,10 @@ class DatabaseService {
         }
     }
 
-    /**
-     * Normaliza el nodo añadiendo toda la información de ruta
-     */
+    // Normaliza un nodo de la base de datos agregando información completa de ruta y estructura
+    // Construye displayTitle, breadcrumbPath, y fullPath recorriendo los ancestros del nodo
+    // item: Objeto nodo obtenido de la base de datos con id, title, type, parent_id
+    // Retorna: Objeto nodo normalizado con información de ruta completa
     _normalizeNode(item) {
         const cleanTitle = item.title.replace(/\/$/, '');
         const type = this._normalizeType(item.type);
@@ -822,7 +808,8 @@ class DatabaseService {
         let breadcrumbPath = '';
         let fullPath = '';
 
-        // Construir la ruta completa
+        // Construir la ruta completa recorriendo la cadena de ancestros hasta la raíz
+        // El límite de 100 iteraciones previene loops infinitos si hay referencias circulares en los datos
         const pathArray = [];
         let currentId = item.id;
 
@@ -833,6 +820,7 @@ class DatabaseService {
             const cleanNodeTitle = node.title.replace(/\/$/, '');
             pathArray.unshift(cleanNodeTitle);
 
+            // Detener cuando se alcanza la raíz (parent_id = 1) o no hay padre
             if (node.parent_id === 1 || !node.parent_id) break;
             currentId = node.parent_id;
         }
@@ -858,27 +846,29 @@ class DatabaseService {
         };
     }
 
-    /**
-     * Normaliza el tipo de nodo
-     */
+    // Normaliza el tipo de nodo a un formato consistente usado en toda la aplicación
+    // Convierte tipos de la base de datos ('Directory', 'File') a formatos estándar ('folder', 'file')
+    // type: Tipo de nodo obtenido de la base de datos
+    // Retorna: Tipo normalizado en minúsculas ('folder', 'file', etc.)
     _normalizeType(type) {
         if (type === 'Directory') return 'folder';
         if (type === 'File') return 'file';
         return type.toLowerCase();
     }
 
-    /**
-     * Muestra un diálogo de error cuando falla algo
-     */
+    // Muestra un diálogo de error al usuario y cierra la aplicación
+    // Se usa cuando hay errores críticos que impiden continuar (ej: base de datos corrupta)
+    // title: Título del diálogo de error
+    // message: Mensaje descriptivo del error que se mostrará al usuario
     _showError(title, message) {
         log.error(`${title}: ${message}`);
         dialog.showErrorBox(title, message);
         app.quit();
     }
 
-    /**
-     * Esto extrae la base de datos desde el archivo 7z
-     */
+    // Extrae la base de datos desde un archivo comprimido .7z usando 7-Zip
+    // Crea una ventana de progreso durante la extracción y elimina el .7z al completar
+    // Retorna Promise que se resuelve cuando la extracción se completa exitosamente
     async _extractDatabase() {
         return new Promise((resolve, reject) => {
             const { dbPath, compressed7zPath } = config.paths;
@@ -888,7 +878,8 @@ class DatabaseService {
             log.info('Archivo comprimido:', compressed7zPath);
             log.info('Destino:', extractDir);
 
-            // Crear ventana de progreso
+            // Crear ventana temporal de progreso para informar al usuario durante la extracción
+            // La ventana muestra un spinner y mensaje mientras se descomprime el archivo grande
             const progressWindow = new BrowserWindow({
                 width: 400,
                 height: 150,
@@ -937,11 +928,12 @@ class DatabaseService {
                 </html>
             `);
 
-            // Buscar 7z
+            // Buscar el ejecutable de 7-Zip en ubicaciones comunes del sistema
             const sevenZipPath = this._find7zPath();
             log.info('Usando 7-Zip:', sevenZipPath);
 
-            // Ejecutar extracción
+            // Ejecutar proceso de extracción usando 7-Zip con parámetros para extracción silenciosa
+            // 'x' = extraer, '-o' = directorio de salida, '-y' = responder sí a todas las preguntas
             const sevenZip = spawn(sevenZipPath, [
                 'x',
                 compressed7zPath,
@@ -954,6 +946,8 @@ class DatabaseService {
 
             let errorOutput = '';
 
+            // Capturar salida estándar para extraer información de progreso
+            // 7-Zip muestra porcentaje de progreso en stdout que podemos parsear
             sevenZip.stdout.on('data', (data) => {
                 const text = data.toString();
                 const progressMatch = text.match(/(\d+)%/);
@@ -962,17 +956,20 @@ class DatabaseService {
                 }
             });
 
+            // Capturar errores de stderr para diagnosticar problemas de extracción
             sevenZip.stderr.on('data', (data) => {
                 errorOutput += data.toString();
             });
 
+            // Manejar el evento cuando el proceso de 7-Zip termina
+            // code = 0 significa éxito, cualquier otro valor indica error
             sevenZip.on('close', (code) => {
                 progressWindow.close();
 
                 if (code === 0) {
                     log.info('Extracción completada exitosamente');
 
-                    // Eliminar archivo .7z
+                    // Eliminar el archivo .7z después de extraer exitosamente para ahorrar espacio
                     try {
                         fs.unlinkSync(compressed7zPath);
                         log.info('Archivo .7z eliminado');
@@ -987,6 +984,8 @@ class DatabaseService {
                 }
             });
 
+            // Manejar errores al intentar ejecutar el proceso de 7-Zip
+            // Ocurre si 7-Zip no está instalado o la ruta es incorrecta
             sevenZip.on('error', (err) => {
                 progressWindow.close();
                 log.error('Error ejecutando 7-Zip:', err);
@@ -995,10 +994,11 @@ class DatabaseService {
         });
     }
 
-    /**
-     * Busca la ruta del ejecutable 7z
-     */
+    // Busca el ejecutable de 7-Zip en ubicaciones comunes según la plataforma
+    // Verifica rutas típicas de instalación antes de usar el fallback al PATH del sistema
+    // Retorna: Ruta completa al ejecutable de 7-Zip o '7z' para usar desde PATH
     _find7zPath() {
+        // Rutas comunes de instalación de 7-Zip según plataforma
         const possiblePaths = process.platform === 'darwin' ? [
             '/usr/local/bin/7z',
             '/opt/homebrew/bin/7z',
@@ -1011,17 +1011,19 @@ class DatabaseService {
             '7z'
         ];
 
+        // Intentar encontrar 7-Zip en las ubicaciones comunes
         for (const p of possiblePaths) {
             try {
                 if (fs.existsSync(p)) {
                     return p;
                 }
             } catch (e) {
-                // Ignorar
+                // Ignorar errores de acceso al verificar existencia de archivo
             }
         }
 
-        return '7z'; // Fallback al PATH del sistema
+        // Fallback: retornar '7z' para que el sistema lo busque en el PATH
+        return '7z';
     }
 }
 

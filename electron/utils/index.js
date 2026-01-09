@@ -1,6 +1,6 @@
-/**
- * Índice de utilidades esta wea principalmente exporta todas las utilidades desde un solo punto para que todo sea mas modular
- */
+// Módulo índice que centraliza todas las utilidades en un solo punto de exportación
+// Facilita la importación de utilidades desde otros módulos sin necesidad de conocer la estructura interna
+// Proporciona una API unificada para logger, helpers de archivos, validación, y schemas de Zod
 
 const { 
     logger, 
@@ -17,20 +17,19 @@ const {
 const fileHelpers = require('./fileHelpers');
 const validation = require('./validation');
 
-// Intentar cargar schemas de Zod (opcional)
+// Intentar cargar schemas de validación de Zod si están disponibles
+// Los schemas son opcionales y se pueden usar para validación más robusta cuando están disponibles
 let schemas = null;
 try {
     schemas = require('./schemas');
 } catch (error) {
-    // Zod schemas no disponibles, usar validación básica
+    // Si los schemas de Zod no están disponibles, se usa validación básica en su lugar
 }
 
 module.exports = {
-    // Logger principal
+    // Logger principal y funciones relacionadas
     logger,
     log,
-    
-    // Funciones de logger
     configureLogger,
     createScopedLogger,
     getLogFilePath,
@@ -39,12 +38,12 @@ module.exports = {
     formatObject,
     electronLog,
 
-    // File helpers
+    // Funciones auxiliares para operaciones con archivos (sanitización, validación de rutas, etc.)
     ...fileHelpers,
 
-    // Validation
+    // Funciones de validación para parámetros y datos de entrada
     ...validation,
     
-    // Schemas solo si están disponibles
+    // Schemas de Zod para validación avanzada (null si no están disponibles)
     schemas
 };

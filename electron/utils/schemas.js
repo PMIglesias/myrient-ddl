@@ -1,17 +1,13 @@
-/**
- * Schemas de validación con Zod para IPC handlers
- * Centraliza todas las validaciones de parámetros en un solo lugar
- */
+// Schemas de validación usando Zod para validación robusta de parámetros IPC
+// Centraliza todas las validaciones en un solo lugar para mantener consistencia
+// Los schemas se usan en los handlers IPC para validar entrada antes de procesarla
 
 const { z } = require('zod');
 
-// =====================
-// SCHEMAS DE BASE DE DATOS
-// =====================
+// Schemas de validación para operaciones relacionadas con la base de datos de índice
 
-/**
- * Schema para búsqueda en base de datos
- */
+// Schema para validar términos de búsqueda en la base de datos
+// Verifica longitud mínima y máxima, y normaliza el término removiendo espacios
 const searchSchema = z.object({
     searchTerm: z.string()
         .min(2, 'El término de búsqueda debe tener al menos 2 caracteres')
@@ -19,20 +15,17 @@ const searchSchema = z.object({
         .transform(val => val.trim())
 });
 
-/**
- * Schema para ID de nodo (usado en get-children, get-ancestors, get-node-info)
- */
+// Schema para validar IDs de nodos en la base de datos
+// Usado en múltiples handlers: get-children, get-ancestors, get-node-info
+// Asegura que el ID sea un número entero positivo válido
 const nodeIdSchema = z.number()
     .int('El ID debe ser un número entero')
     .positive('El ID debe ser positivo');
 
-// =====================
-// SCHEMAS DE DESCARGAS
-// =====================
+// Schemas de validación para operaciones relacionadas con descargas de archivos
 
-/**
- * Schema para parámetros de descarga
- */
+// Schema para validar todos los parámetros requeridos y opcionales de una descarga
+// Valida ID, título, y opcionales como ruta de descarga, preservación de estructura, y sobrescritura
 const downloadParamsSchema = z.object({
     id: z.number()
         .int('El ID debe ser un número entero')
@@ -57,20 +50,16 @@ const downloadParamsSchema = z.object({
         .default(false)
 });
 
-/**
- * Schema para ID de descarga (usado en cancel-download)
- */
+// Schema para validar IDs de descargas individuales
+// Usado en handlers como cancel-download, pause-download, resume-download, etc.
 const downloadIdSchema = z.number()
     .int('El ID de descarga debe ser un número entero')
     .positive('El ID de descarga debe ser positivo');
 
-// =====================
-// SCHEMAS DE CONFIGURACIÓN
-// =====================
+// Schemas de validación para operaciones con archivos de configuración
 
-/**
- * Schema para nombre de archivo de configuración
- */
+// Schema para validar nombres de archivos de configuración con restricciones de seguridad
+// Previene path traversal y asegura que solo se acceda a archivos JSON con nombres seguros
 const configFilenameSchema = z.string()
     .min(1, 'El nombre de archivo no puede estar vacío')
     .max(100, 'El nombre de archivo es demasiado largo')
@@ -79,10 +68,8 @@ const configFilenameSchema = z.string()
         'El nombre de archivo debe terminar en .json y solo contener letras, números, guiones y guiones bajos'
     );
 
-/**
- * Schema para datos de configuración bien generica la wea
- * Acepta cualquier objeto JSON válido
- */
+// Schema genérico para datos de configuración que acepta cualquier objeto JSON válido
+// Verifica que los datos sean serializables a JSON para prevenir errores al guardar
 const configDataSchema = z.record(z.unknown())
     .refine(
         (data) => {

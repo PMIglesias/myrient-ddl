@@ -1,6 +1,5 @@
-/**
- * Utilidades para manejo de archivos y sanitización
- */
+// Utilidades para operaciones con archivos y sanitización de nombres de archivo
+// Proporciona funciones para validar, leer, escribir y limpiar archivos de forma segura
 
 const fs = require('fs');
 const path = require('path');
@@ -9,9 +8,10 @@ const { logger } = require('./logger');
 
 const log = logger.child('FileUtils');
 
-/**
- * Sanitiza un nombre de archivo eliminando caracteres inválidos para que windows no rechace
- */
+// Sanitiza un nombre de archivo reemplazando caracteres inválidos por guiones bajos
+// Elimina caracteres que Windows y otros sistemas operativos no permiten en nombres de archivo
+// filename: Nombre de archivo original a sanitizar
+// Retorna: Nombre de archivo sanitizado seguro para usar en sistemas de archivos
 function sanitizeFilename(filename) {
     return filename
         .replace(/[<>:"|?*]/g, '_')
@@ -20,9 +20,10 @@ function sanitizeFilename(filename) {
         .trim();
 }
 
-/**
- * Sanitiza una ruta completa aplicando sanitización a cada parte
- */
+// Sanitiza una ruta completa aplicando sanitización a cada segmento individualmente
+// Útil para rutas que contienen múltiples niveles de directorios
+// pathStr: Ruta completa a sanitizar (ej: "folder/subfolder/file.txt")
+// Retorna: Ruta sanitizada donde cada segmento ha sido procesado
 function sanitizePath(pathStr) {
     return pathStr
         .split(path.sep)
@@ -30,9 +31,11 @@ function sanitizePath(pathStr) {
         .join(path.sep);
 }
 
-/**
- * Verifica si un archivo existe y compara su tamaño con el esperado
- */
+// Verifica si un archivo existe en el sistema de archivos y compara su tamaño con el esperado
+// Útil para detectar archivos incompletos o determinar si se debe sobrescribir
+// filePath: Ruta completa del archivo a verificar
+// expectedSize: Tamaño esperado en bytes que debería tener el archivo
+// Retorna: Objeto con información sobre existencia, tamaños y si son similares
 function checkFileExists(filePath, expectedSize) {
     try {
         if (fs.existsSync(filePath)) {
@@ -55,9 +58,9 @@ function checkFileExists(filePath, expectedSize) {
     }
 }
 
-/**
- * Lee un archivo JSON de configuración
- */
+// Lee y parsea un archivo JSON desde el directorio de configuración
+// filename: Nombre del archivo JSON (puede incluir o no la extensión .json)
+// Retorna: Objeto parseado del JSON o null si el archivo no existe o hay error
 function readJSONFile(filename) {
     const filePath = path.join(config.paths.configPath, filename);
     try {
@@ -72,9 +75,10 @@ function readJSONFile(filename) {
     }
 }
 
-/**
- * Escribe un archivo JSON de configuración
- */
+// Escribe un objeto JavaScript como archivo JSON en el directorio de configuración
+// filename: Nombre del archivo JSON donde se guardará (puede incluir o no extensión .json)
+// data: Objeto JavaScript que se serializará a JSON con indentación de 2 espacios
+// Retorna: true si la escritura fue exitosa, false si hubo algún error
 function writeJSONFile(filename, data) {
     const filePath = path.join(config.paths.configPath, filename);
     try {
@@ -86,9 +90,10 @@ function writeJSONFile(filename, data) {
     }
 }
 
-/**
- * Crea un directorio si no existe
- */
+// Asegura que un directorio existe, creándolo recursivamente si no existe
+// Útil antes de escribir archivos para evitar errores de directorio no encontrado
+// dirPath: Ruta completa del directorio que debe existir
+// Retorna: true si el directorio existe o se creó exitosamente, false si hubo error
 function ensureDirectoryExists(dirPath) {
     try {
         if (!fs.existsSync(dirPath)) {
@@ -102,9 +107,10 @@ function ensureDirectoryExists(dirPath) {
     }
 }
 
-/**
- * Verifica permisos de escritura en un directorio
- */
+// Verifica si la aplicación tiene permisos de escritura en un directorio específico
+// Útil para validar rutas de descarga antes de intentar escribir archivos
+// dirPath: Ruta del directorio donde se quiere verificar permisos
+// Retorna: true si tiene permisos de escritura, false si no
 function hasWritePermission(dirPath) {
     try {
         fs.accessSync(dirPath, fs.constants.W_OK);
@@ -114,9 +120,10 @@ function hasWritePermission(dirPath) {
     }
 }
 
-/**
- * Elimina un archivo de forma segura (async)
- */
+// Elimina un archivo de forma asíncrona con manejo de errores y reintentos automáticos
+// Maneja casos donde el archivo está en uso temporalmente (EBUSY, EPERM)
+// filePath: Ruta completa del archivo a eliminar
+// retryDelay: Tiempo en milisegundos a esperar antes de reintentar si el archivo está en uso
 function safeUnlink(filePath, retryDelay = 1000) {
     if (!filePath || !fs.existsSync(filePath)) return;
 
@@ -128,7 +135,8 @@ function safeUnlink(filePath, retryDelay = 1000) {
                 code: err.code
             });
 
-            // Reintentar si el archivo está en uso
+            // Reintentar automáticamente si el archivo está temporalmente en uso
+            // Esto puede ocurrir cuando otro proceso tiene el archivo abierto
             if (err.code === 'EBUSY' || err.code === 'EPERM') {
                 log.warn('Archivo en uso, reintentando en', retryDelay, 'ms');
                 setTimeout(() => {

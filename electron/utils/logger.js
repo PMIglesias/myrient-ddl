@@ -1,61 +1,59 @@
-/**
- * 
- * Ubicación de logs:
- * - Windows: %USERPROFILE%\AppData\Roaming\{app}\logs\
- * - macOS: ~/Library/Logs/{app}/
- * - Linux: ~/.config/{app}/logs/
- *
- */
+// Sistema de logging centralizado basado en electron-log
+// Proporciona logging estructurado con niveles, scopes, y rotación automática de archivos
+// 
+// Ubicación de archivos de log según plataforma:
+// - Windows: %USERPROFILE%\AppData\Roaming\{app}\logs\
+// - macOS: ~/Library/Logs/{app}/
+// - Linux: ~/.config/{app}/logs/
 
 const log = require('electron-log');
 const path = require('path');
 
-// =====================
-// CONFIGURACIÓN
-// =====================
-
-/**
- * Para configura el logger con las opciones deseadas
- * Este debe llamarse una vez al inicio de la aplicación si o si
- */
+// Configura el logger global con las opciones especificadas
+// Debe llamarse una vez al inicio de la aplicación, preferiblemente antes que cualquier otra operación
+// options: Objeto con opciones de configuración (fileLevel, consoleLevel, maxSize, isDev, etc.)
 function configureLogger(options = {}) {
     const {
-        // Nivel de log para archivo (en producción)
+        // Nivel mínimo de log que se escribirá al archivo (en producción normalmente 'info')
         fileLevel = 'info',
-        // Nivel de log para consola (en desarrollo)
+        // Nivel mínimo de log que se mostrará en consola (en desarrollo normalmente 'debug')
         consoleLevel = 'debug',
-        // Tamaño máximo del archivo de log (10MB por defecto)
+        // Tamaño máximo en bytes del archivo de log antes de rotar (10 MB por defecto)
         maxSize = 10 * 1024 * 1024,
-        // Formato de fecha para el nombre del archivo
+        // Formato de nombre para archivos de log archivados (no usado actualmente pero disponible)
         fileNameFormat = '{app}-{date}',
-        // Si estamos en modo desarrollo
+        // Determina si la aplicación está en modo desarrollo o producción
         isDev = process.env.NODE_ENV === 'development' || !require('electron').app?.isPackaged
     } = options;
 
-    // --- Configuración del transporte de archivo 
+    // Configuración del transporte de escritura a archivo
+    // Los logs se escriben a un archivo persistente que sobrevive entre sesiones
     log.transports.file.level = fileLevel;
     log.transports.file.maxSize = maxSize;
     
-    // Rotación de archivos: mantener últimos 5 archivos
+    // Función que define cómo se nombran los archivos de log cuando se rotan (archivan)
+    // Agrega un timestamp al nombre del archivo para mantener un historial
     log.transports.file.archiveLogFn = (oldLogFile) => {
         const info = path.parse(oldLogFile.path);
         const timestamp = new Date().toISOString().split('T')[0];
         return path.join(info.dir, `${info.name}-${timestamp}${info.ext}`);
     };
 
-    // Formato del archivo de log
+    // Formato de cada línea de log en el archivo con timestamp completo y nivel
     log.transports.file.format = '[{y}-{m}-{d} {h}:{i}:{s}.{ms}] [{level}]{scope} {text}';
 
-    // --- Configuración del transporte de consola ---
+    // Configuración del transporte de consola para desarrollo
+    // En producción solo muestra warnings y errores, en desarrollo muestra todo según consoleLevel
     log.transports.console.level = isDev ? consoleLevel : 'warn';
     log.transports.console.format = '[{h}:{i}:{s}] [{level}]{scope} {text}';
 
-    // Usar colores en consola
+    // Habilitar colores en la consola para mejor legibilidad durante desarrollo
     log.transports.console.useStyles = true;
 
-    // --- Configuración global ---
+    // Configuración global del logger
     
-    // Capturar errores no manejados
+    // Iniciar captura automática de errores no manejados
+    // Previene que errores críticos pasen desapercibidos
     log.errorHandler.startCatching({
         showDialog: false,
         onError: (error) => {
@@ -63,7 +61,7 @@ function configureLogger(options = {}) {
         }
     });
 
-    // Log inicial
+    // Mensajes iniciales de confirmación que confirman que el logger está configurado correctamente
     log.info('='.repeat(50));
     log.info('Logger inicializado');
     log.info(`Modo: ${isDev ? 'Desarrollo' : 'Producción'}`);
@@ -73,38 +71,37 @@ function configureLogger(options = {}) {
     return log;
 }
 
-// =====================
-// CHILD LOGGERS (SCOPES)
-// =====================
+// Sistema de loggers con scope (child loggers)
+// Permite crear loggers específicos para diferentes módulos que incluyen el scope en cada mensaje
+// Ejemplo: logger.child('Database').info('mensaje') muestra [info] [Database] mensaje
 
-/**
- * Cache de child loggers para evitar recrearlos
- */
+// Cache de child loggers para evitar recrear instancias innecesariamente
+// Mejora el rendimiento reutilizando loggers ya creados
 const childLoggers = new Map();
 
-/**
- * Crea o recupera un logger con scope específico
- * El scope aparece en los logs como [scope]
- * 
- * Esta función extiende el "child" logger con métodos adicionales
- * como startOperation, object, separator para mantener consistencia con el logger principal
- * 
- * const dbLog = createScopedLogger('Database');
- * dbLog.info('Conectado'); esto muestra [2024-01-05 12:00:00] [info] [Database] Conectado
- * const end = dbLog.startOperation('Query'); esto muestra Inicia operación
- * end('exitoso'); esto muestra Termina operación con duración
- */
+// Crea o recupera un logger con un scope específico que aparece en todos los mensajes
+// El scope ayuda a identificar de qué módulo proviene cada mensaje de log
+// Extiende el logger base de electron-log con métodos adicionales útiles
+// 
+// Ejemplo de uso:
+//   const dbLog = createScopedLogger('Database');
+//   dbLog.info('Conectado'); // Muestra: [info] [Database] Conectado
+//   const end = dbLog.startOperation('Query');
+//   end('exitoso'); // Muestra: ✓ Query: exitoso (150ms)
+// 
+// scope: Nombre del scope que aparecerá en todos los logs de este logger
+// Retorna: Logger extendido con métodos adicionales (startOperation, object, separator, child)
 function createScopedLogger(scope) {
     if (childLoggers.has(scope)) {
         return childLoggers.get(scope);
     }
 
-    // Crear el child logger base usando el poderisisisisimo electron-log
+    // Crear el child logger base usando electron-log que agrega automáticamente el scope
     const baseChildLog = log.scope(scope);
     
-    // Esto permite extender con métodos adicionales que no vienen por defecto y te muestra mas cositas
+    // Extender el logger base con métodos adicionales que facilitan logging estructurado
     const extendedChildLog = {
-        // Métodos estándar del child logger
+        // Métodos estándar del logger que simplemente delegan al logger base
         error: (...args) => baseChildLog.error(...args),
         warn: (...args) => baseChildLog.warn(...args),
         info: (...args) => baseChildLog.info(...args),
@@ -113,9 +110,10 @@ function createScopedLogger(scope) {
         silly: (...args) => baseChildLog.silly(...args),
         log: (...args) => baseChildLog.info(...args),
         
-        /**
-         * Log de inicio de operación esto es super útil para medir tiempos de ejecucion
-         */
+        // Inicia una operación y retorna una función para finalizarla con medición de tiempo
+        // Útil para medir tiempos de ejecución de operaciones y debugging de rendimiento
+        // operation: Nombre descriptivo de la operación que se está iniciando
+        // Retorna: Función que debe llamarse cuando la operación termine, acepta un mensaje de resultado opcional
         startOperation: (operation) => {
             const start = Date.now();
             baseChildLog.info(`▶ Iniciando: ${operation}`);
@@ -126,16 +124,15 @@ function createScopedLogger(scope) {
             };
         },
         
-        /**
-         * Log de objeto formateado
-         */
+        // Registra un objeto formateado como JSON para mejor legibilidad
+        // label: Etiqueta descriptiva que identifica el objeto
+        // obj: Objeto a formatear y mostrar en el log
         object: (label, obj) => {
             baseChildLog.info(`${label}:\n${formatObject(obj)}`);
         },
         
-        /**
-         * Log de separador visual
-         */
+        // Crea un separador visual en los logs para organizar secciones
+        // title: Título opcional que aparecerá en el centro del separador
         separator: (title = '') => {
             if (title) {
                 baseChildLog.info(`${'='.repeat(20)} ${title} ${'='.repeat(20)}`);
@@ -144,12 +141,12 @@ function createScopedLogger(scope) {
             }
         },
         
-        /**
-         * Crea un sub-child logger (nested scope)
-         */
+        // Crea un sub-logger con scope anidado (ej: 'Database:Query')
+        // Permite tener jerarquías de scopes para mejor organización
+        // subScope: Nombre del sub-scope que se agregará al scope actual
         child: (subScope) => createScopedLogger(`${scope}:${subScope}`),
         
-        // Acceso al child logger original de electron-log
+        // Acceso al logger original de electron-log para casos especiales
         _raw: baseChildLog
     };
     
@@ -157,29 +154,26 @@ function createScopedLogger(scope) {
     return extendedChildLog;
 }
 
-// =====================
-// UTILIDADES
-// =====================
+// Utilidades auxiliares para gestión de archivos de log y formateo
 
-/**
- * Obtiene la ruta del archivo de log actual
- */
+// Retorna la ruta completa del archivo de log actual donde se están escribiendo los logs
+// Retorna null si no hay archivo de log configurado
 function getLogFilePath() {
     const file = log.transports.file.getFile();
     return file?.path || null;
 }
 
-/**
- * Obtiene el directorio de logs
- */
+// Retorna la ruta del directorio donde se almacenan los archivos de log
+// Útil para operaciones de limpieza o listado de logs
+// Retorna null si no se puede determinar el directorio
 function getLogDirectory() {
     const filePath = getLogFilePath();
     return filePath ? path.dirname(filePath) : null;
 }
 
-/**
- * Limpia logs antiguos (más de X días)
- */
+// Elimina archivos de log más antiguos que el número de días especificado
+// Previene que los logs ocupen demasiado espacio en disco con el tiempo
+// daysToKeep: Número de días de logs a mantener, archivos más antiguos se eliminan
 async function cleanOldLogs(daysToKeep = 30) {
     const fs = require('fs').promises;
     const logDir = getLogDirectory();
@@ -194,12 +188,14 @@ async function cleanOldLogs(daysToKeep = 30) {
         const now = Date.now();
         const maxAge = daysToKeep * 24 * 60 * 60 * 1000;
 
+        // Iterar sobre todos los archivos .log en el directorio
         for (const file of files) {
             if (!file.endsWith('.log')) continue;
             
             const filePath = path.join(logDir, file);
             const stats = await fs.stat(filePath);
             
+            // Eliminar archivos más antiguos que el umbral especificado
             if (now - stats.mtime.getTime() > maxAge) {
                 await fs.unlink(filePath);
                 log.info(`Log antiguo eliminado: ${file}`);
@@ -210,9 +206,11 @@ async function cleanOldLogs(daysToKeep = 30) {
     }
 }
 
-/**
- * Formatea un objeto para que sea compatible con el log evita los casos odiosos de [object Object]
- */
+// Formatea un objeto para mostrarlo de forma legible en los logs
+// Evita el problema común de que los objetos se muestren como "[object Object]"
+// Maneja casos especiales como null, undefined, strings, errores, y objetos complejos
+// obj: Objeto, string, null, undefined, o Error a formatear
+// Retorna: String formateado representando el objeto
 function formatObject(obj) {
     if (obj === null) return 'null';
     if (obj === undefined) return 'undefined';
@@ -221,21 +219,19 @@ function formatObject(obj) {
         return `${obj.message}\n${obj.stack}`;
     }
     try {
+        // Intentar serializar como JSON con indentación para mejor legibilidad
         return JSON.stringify(obj, null, 2);
     } catch {
+        // Si falla la serialización (referencias circulares, etc.), usar conversión básica
         return String(obj);
     }
 }
 
-// =====================
-// LOG PRINCIPAL CON MÉTODOS ADICIONALES
-// =====================
-
-/**
- * Logger principal extendido con métodos útiles utiles y que se usan arto
- */
+// Logger principal de la aplicación extendido con métodos útiles adicionales
+// Proporciona una API consistente para logging con métodos estándar y extensiones personalizadas
 const logger = {
-    // Métodos estándar que te da el poderossisisimo electron-log
+    // Métodos estándar de logging proporcionados por electron-log
+    // Cada método acepta múltiples argumentos y los formatea apropiadamente
     error: (...args) => log.error(...args),
     warn: (...args) => log.warn(...args),
     info: (...args) => log.info(...args),
@@ -243,14 +239,16 @@ const logger = {
     debug: (...args) => log.debug(...args),
     silly: (...args) => log.silly(...args),
     
-    // Alias para compatibilidad
+    // Alias de info para compatibilidad con otros sistemas de logging
     log: (...args) => log.info(...args),
     
-    /**
-     * Crea un child logger con scope
-     */
+    // Crea un child logger con scope específico para un módulo o componente
+    // scope: Nombre del scope que aparecerá en todos los mensajes del logger hijo
     child: (scope) => createScopedLogger(scope),
     
+    // Inicia una operación y retorna función para finalizarla con medición de tiempo
+    // Útil para perfilar operaciones y medir tiempos de ejecución
+    // operation: Nombre descriptivo de la operación
     startOperation: (operation) => {
         const start = Date.now();
         log.info(`▶ Iniciando: ${operation}`);
@@ -261,16 +259,15 @@ const logger = {
         };
     },
     
-    /**
-     * Log de objeto formateado
-     */
+    // Registra un objeto formateado como JSON indentado para mejor legibilidad
+    // label: Etiqueta que identifica el objeto en el log
+    // obj: Objeto a formatear y mostrar
     object: (label, obj) => {
         log.info(`${label}:\n${formatObject(obj)}`);
     },
     
-    /**
-     * Log de separador visual para que la pantalla no te quede lleno de weas 
-     */
+    // Crea un separador visual en los logs para organizar secciones y mejorar legibilidad
+    // title: Título opcional que aparecerá centrado en el separador
     separator: (title = '') => {
         if (title) {
             log.info(`${'='.repeat(20)} ${title} ${'='.repeat(20)}`);
@@ -279,35 +276,32 @@ const logger = {
         }
     },
     
-    // Utilidades
+    // Funciones de utilidad expuestas para acceso directo
     getFilePath: getLogFilePath,
     getDirectory: getLogDirectory,
     cleanOldLogs: cleanOldLogs,
     configure: configureLogger,
     
-    // Acceso al log original de electron-log
+    // Acceso al logger original de electron-log para casos que requieren funcionalidad avanzada
     _raw: log
 };
 
-// =====================
-// EXPORTACIONES
-// =====================
-
+// Exportar todas las funciones y objetos del módulo de logging
 module.exports = {
-    // Logger principal
+    // Logger principal extendido con métodos adicionales
     logger,
     log: logger,
     
-    // Funciones de configuración
+    // Funciones de configuración del sistema de logging
     configureLogger,
     createScopedLogger,
     
-    // Utilidades
+    // Utilidades para gestión de archivos de log
     getLogFilePath,
     getLogDirectory,
     cleanOldLogs,
     formatObject,
     
-    // Para acceso directo a electron-log si es necesario
+    // Acceso directo al logger original de electron-log para funcionalidad avanzada
     electronLog: log
 };

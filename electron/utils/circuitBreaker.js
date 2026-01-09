@@ -1,48 +1,41 @@
-/**
- * Circuit Breaker Pattern para manejo de errores repetidos
- * 
- * Estados:
- * - CLOSED: Operación normal, permite requests
- * - OPEN: Bloqueado, rechaza requests inmediatamente (después de N errores)
- * - HALF_OPEN: Estado de prueba, permite algunos requests para verificar recuperación
- * 
- * Implementación inspirada en Hystrix y resilience4j
- */
+// Implementación del patrón Circuit Breaker para manejo inteligente de errores repetidos
+// Previene sobrecargar servicios que están fallando al rechazar requests después de múltiples errores
+// 
+// Estados del Circuit Breaker:
+// - CLOSED: Estado normal, permite todas las requests y monitorea errores
+// - OPEN: Bloqueado después de alcanzar el umbral de errores, rechaza requests inmediatamente
+// - HALF_OPEN: Estado de prueba después del timeout, permite algunas requests para verificar recuperación
+// 
+// Implementación inspirada en Hystrix y resilience4j
 
 const log = require('./logger');
 
-/**
- * Estados del Circuit Breaker
- */
+// Constantes que definen los posibles estados del Circuit Breaker
 const CircuitState = {
-    CLOSED: 'CLOSED',      // Normal, permite requests
-    OPEN: 'OPEN',          // Bloqueado, rechaza requests
-    HALF_OPEN: 'HALF_OPEN' // Prueba, permite algunos requests
+    CLOSED: 'CLOSED',
+    OPEN: 'OPEN',
+    HALF_OPEN: 'HALF_OPEN'
 };
 
-/**
- * Clase CircuitBreaker
- */
+// Clase que implementa el patrón Circuit Breaker para proteger operaciones contra errores repetidos
 class CircuitBreaker {
-    /**
-     * @param {Object} options - Opciones de configuración
-     * @param {string} options.name - Nombre del circuit breaker (para logging)
-     * @param {number} options.failureThreshold - Número de errores antes de abrir (default: 5)
-     * @param {number} options.successThreshold - Número de éxitos para cerrar desde HALF_OPEN (default: 2)
-     * @param {number} options.timeout - Tiempo en OPEN antes de intentar HALF_OPEN (ms) (default: 60000)
-     * @param {number} options.resetTimeout - Tiempo para resetear contadores en CLOSED (ms) (default: 60000)
-     * @param {Function} options.onStateChange - Callback cuando cambia el estado
-     * @param {Function} options.shouldOpen - Función personalizada para decidir si abrir (opcional)
-     * @param {Function} options.shouldClose - Función personalizada para decidir si cerrar (opcional)
-     */
+    // Inicializa el Circuit Breaker con opciones de configuración
+    // options.name: Nombre identificador usado en logs
+    // options.failureThreshold: Cantidad de errores consecutivos antes de abrir el circuito (default: 5)
+    // options.successThreshold: Cantidad de éxitos necesarios para cerrar desde HALF_OPEN (default: 2)
+    // options.timeout: Tiempo en milisegundos que el circuito permanece OPEN antes de intentar HALF_OPEN (default: 60000)
+    // options.resetTimeout: Tiempo en milisegundos para resetear contadores cuando está CLOSED (default: 60000)
+    // options.onStateChange: Callback opcional que se ejecuta cuando el estado del circuito cambia
+    // options.shouldOpen: Función opcional personalizada para decidir cuándo abrir el circuito
+    // options.shouldClose: Función opcional personalizada para decidir cuándo cerrar el circuito
     constructor(options = {}) {
         this.name = options.name || 'CircuitBreaker';
         this.failureThreshold = options.failureThreshold || 5;
         this.successThreshold = options.successThreshold || 2;
-        this.timeout = options.timeout || 60000; // 60 segundos
-        this.resetTimeout = options.resetTimeout || 60000; // 60 segundos
+        this.timeout = options.timeout || 60000;
+        this.resetTimeout = options.resetTimeout || 60000;
         
-        // Estado actual
+        // Estado y contadores internos del circuito
         this.state = CircuitState.CLOSED;
         this.failureCount = 0;
         this.successCount = 0;
@@ -51,12 +44,12 @@ class CircuitBreaker {
         this.stateChangedAt = Date.now();
         this.nextAttemptTime = null;
         
-        // Callbacks
+        // Callbacks opcionales para personalización del comportamiento
         this.onStateChange = options.onStateChange || (() => {});
         this.shouldOpen = options.shouldOpen || null;
         this.shouldClose = options.shouldClose || null;
         
-        // Estadísticas
+        // Estadísticas acumuladas del Circuit Breaker para monitoreo y debugging
         this.stats = {
             totalRequests: 0,
             totalSuccesses: 0,
@@ -65,7 +58,8 @@ class CircuitBreaker {
             totalStateChanges: 0
         };
         
-        // Reset periódico de contadores en CLOSED
+        // Intervalo periódico que resetea contadores cuando el circuito está CLOSED
+        // Previene que errores antiguos afecten el comportamiento actual
         this.resetInterval = null;
         this._startResetInterval();
     }
@@ -105,17 +99,17 @@ class CircuitBreaker {
             return result;
             
         } catch (error) {
-            // Error
+            // Registrar el fallo en las estadísticas del Circuit Breaker
             this._recordFailure(error);
             
-            // Re-lanzar el error para que el caller lo maneje
+            // Re-lanzar el error para que el código que llamó a execute() pueda manejarlo
             throw error;
         }
     }
 
-    /**
-     * Registra un éxito
-     */
+    // Registra un éxito en la ejecución de una operación protegida
+    // Actualiza contadores y estadísticas, y puede causar transición de estado si está en HALF_OPEN
+    // Si está en CLOSED y han pasado suficientes éxitos, resetea el contador de fallos
     _recordSuccess() {
         this.lastSuccessTime = Date.now();
         this.stats.totalSuccesses++;
@@ -123,13 +117,15 @@ class CircuitBreaker {
         if (this.state === CircuitState.HALF_OPEN) {
             this.successCount++;
             
-            // Si tenemos suficientes éxitos, cerrar el circuit
+            // Si se alcanzan suficientes éxitos consecutivos durante HALF_OPEN, cerrar el circuito
+            // Esto indica que el servicio se ha recuperado y está funcionando normalmente
             if (this.successCount >= this.successThreshold) {
                 log.info(`[CircuitBreaker:${this.name}] Transición HALF_OPEN -> CLOSED (${this.successCount} éxitos)`);
                 this._transitionToState(CircuitState.CLOSED);
             }
         } else if (this.state === CircuitState.CLOSED) {
-            // Resetear contador de fallos si hay éxito reciente
+            // En estado CLOSED, resetear contador de fallos si ha pasado suficiente tiempo desde el último fallo
+            // Esto permite que el circuito se recupere gradualmente después de errores temporales
             if (this.failureCount > 0) {
                 const timeSinceLastFailure = Date.now() - (this.lastFailureTime || 0);
                 if (timeSinceLastFailure > this.resetTimeout) {
@@ -140,9 +136,9 @@ class CircuitBreaker {
         }
     }
 
-    /**
-     * Registra un fallo
-     */
+    // Registra un fallo en la ejecución de una operación protegida
+    // Actualiza contadores y puede causar transición a estado OPEN si se alcanza el umbral
+    // error: Objeto Error que contiene información sobre el fallo ocurrido
     _recordFailure(error) {
         this.lastFailureTime = Date.now();
         this.failureCount++;
@@ -151,12 +147,14 @@ class CircuitBreaker {
         log.debug(`[CircuitBreaker:${this.name}] Fallo registrado (${this.failureCount}/${this.failureThreshold}): ${error.message}`);
 
         if (this.state === CircuitState.HALF_OPEN) {
-            // En HALF_OPEN, cualquier fallo vuelve a abrir
+            // En estado HALF_OPEN, cualquier fallo inmediatamente vuelve a abrir el circuito
+            // Esto es porque HALF_OPEN es un estado de prueba, y un fallo indica que el servicio aún no está recuperado
             log.warn(`[CircuitBreaker:${this.name}] Transición HALF_OPEN -> OPEN (fallo durante prueba)`);
             this._transitionToState(CircuitState.OPEN);
             this.successCount = 0;
         } else if (this.state === CircuitState.CLOSED) {
-            // Verificar si debería abrir
+            // En estado CLOSED, verificar si se alcanzó el umbral de fallos para abrir el circuito
+            // Permite función personalizada shouldOpen para lógica de decisión avanzada
             const shouldOpen = this.shouldOpen 
                 ? this.shouldOpen(this.failureCount, this.failureThreshold, error)
                 : (this.failureCount >= this.failureThreshold);
@@ -168,9 +166,9 @@ class CircuitBreaker {
         }
     }
 
-    /**
-     * Transiciona a un nuevo estado
-     */
+    // Transiciona el Circuit Breaker a un nuevo estado y actualiza todos los contadores relacionados
+    // Resetea contadores apropiados según el nuevo estado y notifica el cambio mediante callback
+    // newState: Nuevo estado al cual transicionar (CLOSED, OPEN, o HALF_OPEN)
     _transitionToState(newState) {
         if (this.state === newState) return;
 
@@ -179,20 +177,24 @@ class CircuitBreaker {
         this.stateChangedAt = Date.now();
         this.stats.totalStateChanges++;
 
-        // Resetear contadores según el nuevo estado
+        // Resetear contadores y timers según el nuevo estado para mantener consistencia
         if (newState === CircuitState.OPEN) {
+            // En OPEN, programar el próximo intento de transición a HALF_OPEN después del timeout
             this.nextAttemptTime = Date.now() + this.timeout;
             this.successCount = 0;
         } else if (newState === CircuitState.HALF_OPEN) {
+            // En HALF_OPEN, resetear contador de éxitos para comenzar pruebas
             this.successCount = 0;
             this.nextAttemptTime = null;
         } else if (newState === CircuitState.CLOSED) {
+            // En CLOSED, resetear todos los contadores ya que el circuito está funcionando normalmente
             this.failureCount = 0;
             this.successCount = 0;
             this.nextAttemptTime = null;
         }
 
-        // Notificar cambio de estado
+        // Ejecutar callback opcional para notificar cambios de estado
+        // Útil para logging externo, métricas, o alertas
         try {
             this.onStateChange({
                 name: this.name,
@@ -209,15 +211,16 @@ class CircuitBreaker {
         log.info(`[CircuitBreaker:${this.name}] Estado: ${oldState} -> ${newState}`);
     }
 
-    /**
-     * Inicia el intervalo de reset periódico
-     */
+    // Inicia un intervalo periódico que resetea contadores de fallos cuando el circuito está CLOSED
+    // Previene que fallos antiguos afecten el comportamiento actual del Circuit Breaker
+    // El intervalo se ejecuta cada resetTimeout/2 o 30 segundos, lo que sea menor
     _startResetInterval() {
         if (this.resetInterval) {
             clearInterval(this.resetInterval);
         }
 
-        // Resetear contadores cada resetTimeout en CLOSED
+        // Configurar intervalo que verifica periódicamente si se deben resetear contadores
+        // Solo resetea cuando está CLOSED y ha pasado suficiente tiempo desde el último fallo
         this.resetInterval = setInterval(() => {
             if (this.state === CircuitState.CLOSED && this.failureCount > 0) {
                 const timeSinceLastFailure = Date.now() - (this.lastFailureTime || 0);
@@ -226,12 +229,12 @@ class CircuitBreaker {
                     this.failureCount = 0;
                 }
             }
-        }, Math.min(this.resetTimeout / 2, 30000)); // Revisar cada 30s o mitad del timeout
+        }, Math.min(this.resetTimeout / 2, 30000));
     }
 
-    /**
-     * Fuerza el reset del circuit breaker a CLOSED
-     */
+    // Fuerza un reset manual del Circuit Breaker al estado CLOSED
+    // Útil para debugging o cuando se necesita reiniciar el estado después de una intervención manual
+    // Limpia todos los contadores y timers relacionados
     reset() {
         log.info(`[CircuitBreaker:${this.name}] Reset manual forzado`);
         this._transitionToState(CircuitState.CLOSED);
@@ -242,9 +245,9 @@ class CircuitBreaker {
         this.nextAttemptTime = null;
     }
 
-    /**
-     * Obtiene el estado actual
-     */
+    // Obtiene una snapshot completa del estado actual del Circuit Breaker
+    // Incluye estado, contadores, timestamps, y estadísticas acumuladas
+    // Retorna: Objeto con toda la información del estado actual del Circuit Breaker
     getState() {
         return {
             state: this.state,
@@ -257,30 +260,27 @@ class CircuitBreaker {
         };
     }
 
-    /**
-     * Verifica si el circuit está abierto (bloqueando requests)
-     */
+    // Verifica si el circuito está en estado OPEN (bloqueando todas las requests)
+    // Retorna: true si está OPEN, false en caso contrario
     isOpen() {
         return this.state === CircuitState.OPEN;
     }
 
-    /**
-     * Verifica si el circuit está cerrado (permitiendo requests normalmente)
-     */
+    // Verifica si el circuito está en estado CLOSED (permitiendo requests normalmente)
+    // Retorna: true si está CLOSED, false en caso contrario
     isClosed() {
         return this.state === CircuitState.CLOSED;
     }
 
-    /**
-     * Verifica si el circuit está en modo de prueba
-     */
+    // Verifica si el circuito está en estado HALF_OPEN (modo de prueba después de timeout)
+    // Retorna: true si está HALF_OPEN, false en caso contrario
     isHalfOpen() {
         return this.state === CircuitState.HALF_OPEN;
     }
 
-    /**
-     * Destruye el circuit breaker y limpia recursos
-     */
+    // Destruye el Circuit Breaker limpiando todos los recursos asociados
+    // Detiene intervalos activos y libera memoria
+    // Debe llamarse cuando el Circuit Breaker ya no se necesite para evitar memory leaks
     destroy() {
         if (this.resetInterval) {
             clearInterval(this.resetInterval);

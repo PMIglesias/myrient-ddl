@@ -1,6 +1,5 @@
-/**
- * Gestión de ventanas de la aplicación
- */
+// Módulo de gestión de ventanas de la aplicación Electron
+// Maneja la creación, configuración y ciclo de vida de la ventana principal
 
 const { BrowserWindow, Menu } = require('electron');
 const path = require('path');
@@ -12,9 +11,9 @@ const log = logger.child('Window');
 
 let mainWindow = null;
 
-/**
- * Crea la ventana principal de la aplicación
- */
+// Crea y configura la ventana principal de la aplicación
+// Configura las opciones de seguridad, CSP, y carga el contenido apropiado según el modo
+// Retorna la instancia de BrowserWindow creada
 function createMainWindow() {
     log.info('Creando ventana principal...');
 
@@ -31,7 +30,8 @@ function createMainWindow() {
         }
     });
 
-    // Configurar headers de seguridad (CSP)
+    // Configura Content Security Policy (CSP) para restringir recursos permitidos
+    // Previene cargar scripts, estilos o recursos de orígenes no autorizados
     mainWindow.webContents.session.webRequest.onHeadersReceived((details, callback) => {
         callback({
             responseHeaders: {
@@ -49,15 +49,15 @@ function createMainWindow() {
         });
     });
 
-    // Cargar contenido
+    // Determina si cargar desde servidor de desarrollo o archivo local
     const VITE_DEV_SERVER_URL = process.env['VITE_DEV_SERVER_URL'];
 
     if (VITE_DEV_SERVER_URL) {
-        // Modo desarrollo
+        // Modo desarrollo: conectar al servidor de desarrollo de Vite para hot-reload
         log.info('Cargando desde servidor de desarrollo:', VITE_DEV_SERVER_URL);
         mainWindow.loadURL(VITE_DEV_SERVER_URL);
     } else {
-        // Modo producción
+        // Modo producción: cargar desde el archivo index.html compilado
         const indexPath = path.join(app.getAppPath(), 'dist', 'index.html');
 
         log.info('=== CARGA DE APLICACIÓN ===');
@@ -66,7 +66,8 @@ function createMainWindow() {
         log.info('Existe:', fs.existsSync(indexPath));
 
         if (!fs.existsSync(indexPath)) {
-            // Buscar en rutas alternativas
+            // Si el archivo no está en la ruta esperada, buscar en ubicaciones alternativas
+            // Esto es necesario porque la estructura puede variar entre desarrollo y empaquetado
             const alternatives = [
                 path.join(app.getAppPath(), 'dist', 'index.html'),
                 path.join(process.resourcesPath, 'dist', 'index.html'),
@@ -82,7 +83,7 @@ function createMainWindow() {
                 }
             }
 
-            // Si no se encontró en ninguna ruta
+            // Si no se encontró el archivo en ninguna ubicación, mostrar mensaje de error
             if (!mainWindow.webContents.getURL()) {
                 const errorMsg = `No se encontró index.html\nBuscado en: ${indexPath}`;
                 log.error(errorMsg);
@@ -95,15 +96,15 @@ function createMainWindow() {
         }
     }
 
-    // DevTools solo en desarrollo
+    // Abrir DevTools automáticamente solo en modo desarrollo para facilitar debugging
     if (!app.isPackaged) {
         mainWindow.webContents.openDevTools();
     }
 
-    // Sin menú de aplicación
+    // Deshabilitar el menú de aplicación para una interfaz más limpia
     Menu.setApplicationMenu(null);
 
-    // Eventos de ventana
+    // Limpiar referencia cuando la ventana se cierre
     mainWindow.on('closed', () => {
         mainWindow = null;
     });
@@ -112,16 +113,14 @@ function createMainWindow() {
     return mainWindow;
 }
 
-/**
- * Obtiene la ventana principal
- */
+// Retorna la instancia de la ventana principal si existe
+// Retorna null si no hay ventana creada
 function getMainWindow() {
     return mainWindow;
 }
 
-/**
- * Verifica si la ventana principal existe y no está destruida
- */
+// Verifica si la ventana principal existe y está disponible
+// Útil para evitar errores al intentar usar una ventana destruida
 function isMainWindowValid() {
     return mainWindow && !mainWindow.isDestroyed();
 }

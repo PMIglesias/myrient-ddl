@@ -1,28 +1,29 @@
-/**
- * ProgressBatcher - Acumulador de actualizaciones de progreso
- */
+// Acumulador de actualizaciones de progreso para escrituras batch a la base de datos
+// Reduce el número de escrituras agrupando múltiples actualizaciones en transacciones
+// Mejora el rendimiento al evitar escribir cada actualización individualmente
 
 const { logger } = require('./utils');
 const log = logger.child('ProgressBatcher');
 
 class ProgressBatcher {
-    /**
-     * @param {Object} queueDb - Instancia de queueDatabase
-     * @param {number} flushInterval - Intervalo en ms para flush automático (default: 2000)
-     */
+    // Inicializa el batcher con la base de datos de cola y un intervalo de flush
+    // queueDb: Instancia de queueDatabase donde se escribirán las actualizaciones
+    // flushInterval: Intervalo en milisegundos entre cada flush automático (default: 2000ms)
     constructor(queueDb, flushInterval = 2000) {
         this.queueDb = queueDb;
         this.flushInterval = flushInterval;
         
-        // Maps para acumular actualizaciones
-        this.chunkUpdates = new Map();      // key: "downloadId-chunkIndex"
-        this.progressUpdates = new Map();    // key: downloadId
+        // Maps para acumular actualizaciones antes de escribirlas en batch
+        // chunkUpdates: key es "downloadId-chunkIndex", value es objeto con datos del chunk
+        this.chunkUpdates = new Map();
+        // progressUpdates: key es downloadId, value es objeto con progreso general
+        this.progressUpdates = new Map();
         
         this.timer = null;
         this.isFlushing = false;
         this.isDestroyed = false;
         
-        // Estadísticas
+        // Estadísticas de rendimiento y eficiencia del batching
         this.stats = {
             totalQueued: 0,
             totalFlushed: 0,
@@ -46,7 +47,8 @@ class ProgressBatcher {
         const key = `${downloadId}-${chunkIndex}`;
         const existing = this.chunkUpdates.get(key);
         
-        // Mergear con datos existentes (si los hay)
+        // Mergear con datos existentes para acumular todas las actualizaciones pendientes
+        // Esto evita escribir múltiples veces el mismo chunk si hay actualizaciones rápidas
         this.chunkUpdates.set(key, { 
             downloadId, 
             chunkIndex,
@@ -57,18 +59,18 @@ class ProgressBatcher {
         
         this.stats.totalQueued++;
         if (existing) {
-            this.stats.savedWrites++; // Contamos una escritura ahorrada
+            // Si había una actualización previa, se ahorró una escritura a la BD
+            this.stats.savedWrites++;
         }
         
         this._scheduleFlush();
     }
 
-    /**
-     * Encola una actualización de progreso general de descarga
-     * @param {number} downloadId - ID de la descarga
-     * @param {number} progress - Progreso (0.0 - 1.0)
-     * @param {number} downloadedBytes - Bytes descargados
-     */
+    // Agrega una actualización de progreso general de una descarga a la cola
+    // Si ya existe una actualización pendiente para la misma descarga, se sobrescribe
+    // downloadId: ID numérico de la descarga
+    // progress: Progreso como valor decimal entre 0.0 y 1.0
+    // downloadedBytes: Cantidad total de bytes descargados hasta el momento
     queueProgressUpdate(downloadId, progress, downloadedBytes) {
         if (this.isDestroyed) return;
         
@@ -89,10 +91,8 @@ class ProgressBatcher {
         this._scheduleFlush();
     }
 
-    /**
-     * Programa un flush si no hay uno pendiente
-     * @private
-     */
+    // Programa un flush automático si no hay uno ya programado o en ejecución
+    // Evita múltiples timers concurrentes y flush simultáneos
     _scheduleFlush() {
         if (this.timer || this.isFlushing || this.isDestroyed) return;
         
@@ -104,10 +104,9 @@ class ProgressBatcher {
         }, this.flushInterval);
     }
 
-    /**
-     * Ejecuta el flush de todas las actualizaciones pendientes
-     * @returns {Promise<void>}
-     */
+    // Escribe todas las actualizaciones acumuladas en la base de datos usando una transacción
+    // Agrupa todas las escrituras en una sola transacción para mejor rendimiento y atomicidad
+    // Retorna Promise<void> que se resuelve cuando todas las escrituras se completan
     async flush() {
         if (this.isFlushing || this.isDestroyed) return;
         if (this.chunkUpdates.size === 0 && this.progressUpdates.size === 0) return;
@@ -116,7 +115,8 @@ class ProgressBatcher {
         const startTime = Date.now();
         
         try {
-            // Tomar snapshot y limpiar maps
+            // Crear snapshot de las actualizaciones y limpiar los maps inmediatamente
+            // Esto permite que nuevas actualizaciones se acumulen mientras se procesa el batch actual
             const chunkUpdates = [...this.chunkUpdates.values()];
             const progressUpdates = [...this.progressUpdates.values()];
             
@@ -126,15 +126,16 @@ class ProgressBatcher {
             const totalUpdates = chunkUpdates.length + progressUpdates.length;
             
             if (totalUpdates > 0) {
-                // Verificar que la BD está disponible
+                // Verificar que la base de datos está disponible antes de intentar escribir
                 if (!this.queueDb || !this.queueDb.db) {
                     log.warn('QueueDB no disponible, descartando actualizaciones');
                     return;
                 }
                 
-                // Ejecutar todo en una transacción para atomicidad y rendimiento
+                // Ejecutar todas las actualizaciones en una transacción única
+                // Esto garantiza atomicidad y mejor rendimiento que múltiples escrituras individuales
                 const transaction = this.queueDb.db.transaction(() => {
-                    // Actualizar chunks
+                    // Actualizar el estado y progreso de cada chunk en la base de datos
                     for (const update of chunkUpdates) {
                         try {
                             this.queueDb.updateChunk(
@@ -147,12 +148,12 @@ class ProgressBatcher {
                                 }
                             );
                         } catch (e) {
-                            // Log pero no fallar toda la transacción
+                            // Loggear errores pero no fallar toda la transacción por un chunk individual
                             log.debug(`Error actualizando chunk ${update.downloadId}-${update.chunkIndex}:`, e.message);
                         }
                     }
                     
-                    // Actualizar progreso general
+                    // Actualizar el progreso general de cada descarga
                     for (const update of progressUpdates) {
                         try {
                             this.queueDb.updateProgress(
@@ -168,7 +169,7 @@ class ProgressBatcher {
                 
                 transaction();
                 
-                // Actualizar estadísticas
+                // Actualizar estadísticas de rendimiento
                 this.stats.totalFlushed += totalUpdates;
                 this.stats.flushCount++;
                 this.stats.lastFlushTime = Date.now() - startTime;
@@ -178,24 +179,24 @@ class ProgressBatcher {
             
         } catch (error) {
             log.error('Error en flush:', error.message);
-            // No re-throw para no interrumpir el flujo
+            // No relanzar el error para no interrumpir el flujo de la aplicación
         } finally {
             this.isFlushing = false;
         }
     }
 
-    /**
-     * Fuerza un flush inmediato (usado al completar/pausar descarga)
-     * @returns {Promise<void>}
-     */
+    // Fuerza un flush inmediato cancelando cualquier timer pendiente
+    // Útil cuando se necesita garantizar que las actualizaciones se guarden antes de continuar
+    // Espera a que cualquier flush en progreso termine antes de ejecutar uno nuevo
+    // Retorna Promise<void> que se resuelve cuando el flush se completa
     async forceFlush() {
-        // Cancelar timer pendiente
+        // Cancelar timer pendiente para ejecutar flush inmediatamente
         if (this.timer) {
             clearTimeout(this.timer);
             this.timer = null;
         }
         
-        // Esperar si hay flush en progreso
+        // Esperar a que termine cualquier flush en progreso para evitar condiciones de carrera
         while (this.isFlushing) {
             await new Promise(resolve => setTimeout(resolve, 10));
         }
@@ -203,19 +204,19 @@ class ProgressBatcher {
         return this.flush();
     }
 
-    /**
-     * Fuerza flush solo para una descarga específica
-     * @param {number} downloadId - ID de la descarga
-     * @returns {Promise<void>}
-     */
+    // Fuerza flush solo para las actualizaciones de una descarga específica
+    // Extrae las actualizaciones de la descarga, las elimina de los maps, y las escribe inmediatamente
+    // Útil al completar o pausar una descarga para asegurar estado consistente
+    // downloadId: ID numérico de la descarga a flushar
+    // Retorna Promise<void> que se resuelve cuando el flush se completa
     async flushDownload(downloadId) {
         if (this.isDestroyed) return;
         
-        // Extraer actualizaciones de esta descarga
+        // Extraer actualizaciones pendientes solo para esta descarga
         const chunkUpdates = [];
         const progressUpdate = this.progressUpdates.get(downloadId);
         
-        // Buscar chunks de esta descarga
+        // Buscar y extraer todos los chunks de esta descarga de los maps
         for (const [key, update] of this.chunkUpdates) {
             if (update.downloadId === downloadId) {
                 chunkUpdates.push(update);
@@ -229,7 +230,7 @@ class ProgressBatcher {
         
         if (chunkUpdates.length === 0 && !progressUpdate) return;
         
-        // Flush solo estas actualizaciones
+        // Escribir solo las actualizaciones de esta descarga en una transacción
         if (this.queueDb && this.queueDb.db) {
             const transaction = this.queueDb.db.transaction(() => {
                 for (const update of chunkUpdates) {
@@ -260,10 +261,9 @@ class ProgressBatcher {
         }
     }
 
-    /**
-     * Obtiene estadísticas del batcher
-     * @returns {Object}
-     */
+    // Retorna estadísticas de rendimiento del batcher incluyendo eficiencia de batching
+    // La eficiencia muestra el porcentaje de escrituras ahorradas gracias al batching
+    // Retorna objeto con estadísticas actuales
     getStats() {
         return {
             ...this.stats,
@@ -275,9 +275,9 @@ class ProgressBatcher {
         };
     }
 
-    /**
-     * Limpia recursos
-     */
+    // Limpia todos los recursos y cancela timers pendientes
+    // Intenta hacer un flush final de actualizaciones pendientes antes de destruir
+    // Debe llamarse cuando la instancia ya no se necesite para evitar memory leaks
     destroy() {
         this.isDestroyed = true;
         
@@ -286,7 +286,8 @@ class ProgressBatcher {
             this.timer = null;
         }
         
-        // Flush final sincrónico (best effort)
+        // Intentar hacer un flush final de actualizaciones pendientes (mejor esfuerzo)
+        // Si falla, solo se loggea un warning ya que la aplicación está cerrándose
         if (this.chunkUpdates.size > 0 || this.progressUpdates.size > 0) {
             try {
                 this.flush();

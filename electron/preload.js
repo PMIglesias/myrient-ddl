@@ -1,35 +1,31 @@
-/**
- * Preload script - Bridge seguro entre main y renderer
- * 
- * Este script se ejecuta en un contexto aislado y expone
- * una API limitada y segura al proceso renderer.
- * 
- * SEGURIDAD: Todos los canales IPC deben estar en las whitelists
- * y se validan antes de cada invocación.
- */
+// Script de preload que actúa como puente seguro entre el proceso principal y el renderer
+// Se ejecuta en un contexto aislado y expone una API limitada y validada al proceso renderer
+// SEGURIDAD: Todos los canales IPC deben estar en las whitelists y se validan antes de cada invocación
+// Esto previene que código malicioso en el renderer acceda a canales IPC no autorizados
 
 const { contextBridge, ipcRenderer } = require('electron');
 
-// =====================
-// WHITELISTS DE CANALES IPC
-// =====================
+// Whitelist de canales IPC permitidos para comunicación entre procesos
+// Estos canales están validados y solo se permiten los que están explícitamente listados
 
-// Canales IPC permitidos para eventos (one-way, main -> renderer)
+// Canales permitidos para eventos unidireccionales (solo main -> renderer)
+// El renderer solo puede escuchar estos eventos, no enviarlos
 const validEventChannels = [
     'download-progress',
     'history-cleaned',
     'downloads-restored'
 ];
 
-// Canales IPC permitidos para invocaciones (two-way, renderer <-> main)
+// Canales permitidos para invocaciones bidireccionales (renderer <-> main)
+// El renderer puede invocar estos canales y recibir respuestas del proceso principal
 const validInvokeChannels = [
-    // Base de datos
+    // Operaciones de base de datos de índice Myrient
     'search-db',
     'get-children',
     'get-ancestors',
     'get-node-info',
     'get-db-update-date',
-    // Descargas
+    // Gestión de descargas
     'download-file',
     'download-folder',
     'pause-download',
@@ -41,27 +37,25 @@ const validInvokeChannels = [
     'get-download-stats',
     'get-queue-time-estimate',
     'clean-history',
-    // Configuración
+    // Lectura y escritura de archivos de configuración
     'read-config-file',
     'write-config-file',
-    // Ventana
+    // Control de ventana
     'window-minimize',
     'window-maximize',
     'window-close',
-    // Diálogos
+    // Diálogos del sistema
     'select-folder'
 ];
 
-// =====================
-// HELPERS DE SEGURIDAD
-// =====================
+// Funciones auxiliares de seguridad que validan todos los accesos IPC
+// Garantizan que solo se pueden usar canales previamente autorizados en las whitelists
 
-/**
- * Invocación segura - valida el canal antes de invocar
- * @param {string} channel - Canal IPC a invocar
- * @param  {...any} args - Argumentos para el handler
- * @returns {Promise} - Resultado de la invocación
- */
+// Valida que el canal IPC esté autorizado antes de invocar el handler
+// Si el canal no está en la whitelist, rechaza la invocación con un error
+// channel: Nombre del canal IPC a invocar (debe estar en validInvokeChannels)
+// ...args: Argumentos que se pasarán al handler en el proceso principal
+// Retorna: Promise que se resuelve con la respuesta del handler o se rechaza si el canal no es válido
 const safeInvoke = (channel, ...args) => {
     if (!validInvokeChannels.includes(channel)) {
         console.error(`[Preload] ⛔ Canal IPC no autorizado: ${channel}`);
@@ -70,19 +64,19 @@ const safeInvoke = (channel, ...args) => {
     return ipcRenderer.invoke(channel, ...args);
 };
 
-/**
- * Suscripción segura a eventos
- * @param {string} channel - Canal de eventos
- * @param {Function} callback - Función a ejecutar
- * @returns {Function} - Función de cleanup
- */
+// Valida y registra un listener para eventos IPC del proceso principal
+// Envuelve el callback con manejo de errores para prevenir que errores en el listener rompan la aplicación
+// channel: Nombre del canal de eventos (debe estar en validEventChannels)
+// callback: Función que se ejecutará cuando se reciba un evento en el canal
+// Retorna: Función de cleanup que debe llamarse para remover el listener cuando ya no se necesite
 const safeOn = (channel, callback) => {
     if (!validEventChannels.includes(channel)) {
         console.warn(`[Preload] ⚠️ Canal de eventos no válido: ${channel}`);
-        return () => {}; // Retornar función vacía
+        // Retornar función vacía para que el código que espera una función de cleanup no falle
+        return () => {};
     }
 
-    // Wrapper para el callback con manejo de errores
+    // Wrapper que captura errores en el callback para evitar que rompan la aplicación
     const listener = (_event, ...args) => {
         try {
             callback(...args);
@@ -93,7 +87,8 @@ const safeOn = (channel, callback) => {
 
     ipcRenderer.on(channel, listener);
 
-    // Retornar función de cleanup
+    // Retornar función que remueve el listener cuando se llama
+    // Es importante llamar esta función para evitar memory leaks
     return () => {
         try {
             ipcRenderer.removeListener(channel, listener);
@@ -104,159 +99,121 @@ const safeOn = (channel, callback) => {
     };
 };
 
-// =====================
-// API EXPUESTA
-// =====================
-
-/**
- * API expuesta al renderer process
- * Todas las invocaciones pasan por safeInvoke para validación
- */
+// API que se expone al proceso renderer a través de contextBridge
+// Todas las funciones pasan por validación de seguridad usando safeInvoke
+// El renderer solo puede acceder a esta API, no directamente a ipcRenderer
 const api = {
-    // =====================
-    // EVENTOS (Escuchar)
-    // =====================
-
-    /**
-     * Suscribe a un canal de eventos
-     */
+    // Suscripción a eventos unidireccionales del proceso principal
+    // Permite al renderer escuchar eventos como actualizaciones de progreso de descargas
     on: safeOn,
 
-    // =====================
-    // BASE DE DATOS
-    // =====================
-
-    /**
-     * Busca en la base de datos
-     */
+    // Operaciones de búsqueda y navegación en la base de datos de índice Myrient
+    // Todas estas operaciones son de solo lectura sobre la base de datos principal
+    
+    // Busca archivos y carpetas en la base de datos usando el término proporcionado
+    // term: Texto de búsqueda que se utilizará para encontrar coincidencias
     search: (term) => safeInvoke('search-db', term),
 
-    /**
-     * Obtiene hijos de un nodo
-     */
+    // Obtiene los nodos hijos directos de un nodo padre en la estructura de carpetas
+    // parentId: ID numérico del nodo padre del cual obtener los hijos
     getChildren: (parentId) => safeInvoke('get-children', parentId),
 
-    /**
-     * Obtiene ancestros de un nodo (para breadcrumb)
-     */
+    // Obtiene la cadena de ancestros de un nodo para construir breadcrumbs
+    // nodeId: ID numérico del nodo del cual obtener la ruta de ancestros
     getAncestors: (nodeId) => safeInvoke('get-ancestors', nodeId),
 
-    /**
-     * Obtiene información de un nodo específico
-     */
+    // Obtiene información básica de un nodo específico (tipo, título, parent_id)
+    // nodeId: ID numérico del nodo del cual obtener la información
     getNodeInfo: (nodeId) => safeInvoke('get-node-info', nodeId),
 
-    /**
-     * Obtiene la fecha de última actualización de la DB
-     */
+    // Obtiene la fecha de última actualización de la base de datos de índice
+    // Útil para mostrar al usuario cuán actualizada está la información
     getDbUpdateDate: () => safeInvoke('get-db-update-date'),
 
-    // =====================
-    // DESCARGAS
-    // =====================
+    // Control de descargas de archivos individuales y carpetas completas
+    // Todas las operaciones de descarga se gestionan a través de estos métodos
 
-    /**
-     * Inicia una descarga
-     */
+    // Inicia la descarga de un archivo individual
+    // file: Objeto con información del archivo (id, title, downloadPath, etc.)
     download: (file) => safeInvoke('download-file', file),
 
-    /**
-     * Descarga todos los archivos de una carpeta recursivamente
-     */
+    // Inicia la descarga recursiva de todos los archivos contenidos en una carpeta
+    // params: Objeto con folderId, downloadPath, preserveStructure, etc.
     downloadFolder: (params) => safeInvoke('download-folder', params),
 
-    /**
-     * Pausa una descarga (preserva archivos .part)
-     */
+    // Pausa temporalmente una descarga activa, preservando los archivos parciales (.part)
+    // downloadId: ID numérico de la descarga a pausar
     pauseDownload: (downloadId) => safeInvoke('pause-download', downloadId),
 
-    /**
-     * Reanuda una descarga pausada
-     */
+    // Reanuda una descarga que fue previamente pausada, continuando desde donde se detuvo
+    // downloadId: ID numérico de la descarga a reanudar
     resumeDownload: (downloadId) => safeInvoke('resume-download', downloadId),
 
-    /**
-     * Cancela una descarga (elimina archivos)
-     */
+    // Cancela permanentemente una descarga y elimina los archivos parciales descargados
+    // downloadId: ID numérico de la descarga a cancelar
     cancelDownload: (downloadId) => safeInvoke('cancel-download', downloadId),
 
-    /**
-     * Reinicia una descarga cancelada o fallida
-     */
+    // Reinicia una descarga que fue cancelada o falló, comenzando desde cero
+    // downloadId: ID numérico de la descarga a reiniciar
     retryDownload: (downloadId) => safeInvoke('retry-download', downloadId),
 
-    /**
-     * Confirma sobrescritura de un archivo existente
-     */
+    // Confirma la sobrescritura de un archivo existente cuando se detecta conflicto
+    // downloadId: ID numérico de la descarga que requiere confirmación
     confirmOverwrite: (downloadId) => safeInvoke('confirm-overwrite', downloadId),
 
-    /**
-     * Elimina una descarga de la base de datos
-     */
+    // Elimina completamente una descarga de la base de datos y el historial
+    // downloadId: ID numérico de la descarga a eliminar
     deleteDownload: (downloadId) => safeInvoke('delete-download', downloadId),
 
-    /**
-     * Obtiene estadísticas de descargas
-     */
+    // Obtiene estadísticas generales sobre el estado de todas las descargas
+    // Incluye cantidad de descargas activas, en cola, completadas, etc.
     getDownloadStats: () => safeInvoke('get-download-stats'),
 
-    /**
-     * Obtiene la estimación de tiempo de cola
-     * @param {number|null} downloadId - ID de descarga específica (opcional)
-     */
+    // Obtiene una estimación del tiempo restante para que una descarga específica comience
+    // o el tiempo total estimado para completar todas las descargas en cola
+    // downloadId: ID opcional de la descarga específica, o null para estimación total de cola
     getQueueTimeEstimate: (downloadId = null) => safeInvoke('get-queue-time-estimate', downloadId),
 
-    /**
-     * Limpia el historial de descargas
-     */
+    // Limpia el historial de descargas eliminando registros más antiguos que los días especificados
+    // daysOld: Número de días de antigüedad mínimo para considerar una descarga como histórica
     cleanHistory: (daysOld) => safeInvoke('clean-history', daysOld),
 
-    // =====================
-    // CONFIGURACIÓN
-    // =====================
+    // Gestión de archivos de configuración JSON almacenados en el directorio de configuración
+    // Estos archivos persisten preferencias del usuario entre sesiones
 
-    /**
-     * Lee un archivo de configuración
-     */
+    // Lee el contenido de un archivo de configuración y lo retorna como objeto JavaScript
+    // filename: Nombre del archivo de configuración (sin extensión .json)
     readConfigFile: (filename) => safeInvoke('read-config-file', filename),
 
-    /**
-     * Escribe un archivo de configuración
-     */
+    // Escribe un objeto JavaScript como JSON en un archivo de configuración
+    // filename: Nombre del archivo de configuración (sin extensión .json)
+    // data: Objeto que se serializará a JSON y se guardará en el archivo
     writeConfigFile: (filename, data) => safeInvoke('write-config-file', filename, data),
 
-    // =====================
-    // VENTANA
-    // =====================
+    // Control de la ventana principal de la aplicación
+    // Permite al renderer solicitar cambios en el estado de la ventana
 
-    /**
-     * Minimiza la ventana
-     */
+    // Minimiza la ventana principal al taskbar
     minimizeWindow: () => safeInvoke('window-minimize'),
 
-    /**
-     * Maximiza o restaura la ventana
-     */
+    // Maximiza la ventana si está normal, o la restaura a tamaño normal si está maximizada
     maximizeWindow: () => safeInvoke('window-maximize'),
 
-    /**
-     * Cierra la ventana
-     */
+    // Cierra la ventana principal, lo cual puede iniciar el proceso de cierre de la aplicación
     closeWindow: () => safeInvoke('window-close'),
 
-    // =====================
-    // DIÁLOGOS
-    // =====================
-
-    /**
-     * Abre el cuadro de diálogo para seleccionar la carpeta
-     */
+    // Abre el diálogo nativo del sistema operativo para seleccionar una carpeta
+    // Retorna la ruta de la carpeta seleccionada por el usuario o null si canceló
     selectFolder: () => safeInvoke('select-folder')
 };
 
-// Exponer API al renderer de forma segura
+// Expone la API de forma segura al objeto global window en el contexto del renderer
+// contextBridge garantiza que el renderer no pueda acceder directamente a Node.js o Electron
+// Solo puede usar la API expuesta, mejorando la seguridad de la aplicación
 contextBridge.exposeInMainWorld('api', api);
 
+// Logs informativos al cargar el preload para verificar que todo está configurado correctamente
+// Útiles para debugging durante el desarrollo
 console.log('[Preload] ✅ API expuesta correctamente');
 console.log('[Preload] Canales de eventos:', validEventChannels.length);
 console.log('[Preload] Canales de invocación:', validInvokeChannels.length);
