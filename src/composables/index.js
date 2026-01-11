@@ -1,6 +1,6 @@
 /**
  * Índice de Composables
- * 
+ *
  * Exporta todos los composables para uso centralizado
  */
 

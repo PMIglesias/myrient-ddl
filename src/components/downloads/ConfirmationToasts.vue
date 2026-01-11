@@ -1,9 +1,9 @@
 <template>
   <div class="confirmation-notifications">
     <TransitionGroup name="slide-fade">
-      <div 
-        v-for="confirmation in visibleConfirmations" 
-        :key="confirmation.id" 
+      <div
+        v-for="confirmation in visibleConfirmations"
+        :key="confirmation.id"
         class="confirmation-toast"
       >
         <div class="toast-content">
@@ -19,10 +19,18 @@
           </div>
           <div class="toast-actions-line">
             <span class="toast-question">¿Sobrescribir?</span>
-            <button @click="$emit('confirm', confirmation.id)" class="toast-btn toast-btn-yes">
+            <button
+              class="toast-btn toast-btn-yes"
+              :aria-label="`Sobrescribir archivo ${confirmation.title}`"
+              @click="$emit('confirm', confirmation.id)"
+            >
               ✓ Sí
             </button>
-            <button @click="$emit('cancel', confirmation.id)" class="toast-btn toast-btn-no">
+            <button
+              class="toast-btn toast-btn-no"
+              :aria-label="`Cancelar descarga de ${confirmation.title}`"
+              @click="$emit('cancel', confirmation.id)"
+            >
               ✗ No
             </button>
           </div>
@@ -39,8 +47,8 @@ import { computed } from 'vue';
 const props = defineProps({
   confirmations: {
     type: Array,
-    required: true
-  }
+    required: true,
+  },
 });
 
 // Emits
@@ -52,12 +60,12 @@ const visibleConfirmations = computed(() => {
 });
 
 // Métodos
-const getSizeComparison = (confirmation) => {
+const getSizeComparison = confirmation => {
   const { existingSize, expectedSize } = confirmation;
-  
+
   if (!existingSize || !expectedSize) return 'Tamaño desconocido';
-  
-  const formatSize = (bytes) => {
+
+  const formatSize = bytes => {
     if (bytes < 1024) return `${bytes} B`;
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
     if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
@@ -65,16 +73,15 @@ const getSizeComparison = (confirmation) => {
   };
 
   const diff = existingSize - expectedSize;
-  
+
   if (Math.abs(diff) < 1024) {
     return `Tamaños iguales (${formatSize(existingSize)})`;
   }
-  
+
   if (diff > 0) {
     return `Existente mayor: ${formatSize(existingSize)} vs ${formatSize(expectedSize)}`;
   }
-  
+
   return `Existente menor: ${formatSize(existingSize)} vs ${formatSize(expectedSize)}`;
 };
 </script>
-

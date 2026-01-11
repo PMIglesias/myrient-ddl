@@ -1,9 +1,9 @@
 <template>
   <div class="toast-notifications">
     <TransitionGroup name="toast-slide">
-      <div 
-        v-for="toast in toasts" 
-        :key="toast.id" 
+      <div
+        v-for="toast in toasts"
+        :key="toast.id"
         :class="['toast', `toast-${toast.type}`]"
         @click="removeToast(toast.id)"
       >
@@ -14,13 +14,20 @@
           <span v-else-if="toast.type === 'error'">✗</span>
         </div>
         <div class="toast-content">
-          <div class="toast-title">{{ toast.title }}</div>
-          <div v-if="toast.message" class="toast-message">{{ toast.message }}</div>
+          <div class="toast-title">
+            {{ toast.title }}
+          </div>
+          <div
+            v-if="toast.message"
+            class="toast-message"
+          >
+            {{ toast.message }}
+          </div>
         </div>
-        <button 
-          @click.stop="removeToast(toast.id)" 
+        <button
           class="toast-close"
           aria-label="Cerrar notificación"
+          @click.stop="removeToast(toast.id)"
         >
           ×
         </button>
@@ -36,15 +43,15 @@ import { ref, onMounted, onUnmounted } from 'vue';
 const props = defineProps({
   toasts: {
     type: Array,
-    default: () => []
-  }
+    default: () => [],
+  },
 });
 
 // Emits
 const emit = defineEmits(['remove']);
 
 // Métodos
-const removeToast = (id) => {
+const removeToast = id => {
   emit('remove', id);
 };
 </script>
@@ -72,7 +79,7 @@ const removeToast = (id) => {
   display: flex;
   align-items: flex-start;
   gap: 12px;
-  border-left: 4px solid #4CAF50;
+  border-left: 4px solid #4caf50;
   min-width: 300px;
   transition: all 0.3s ease;
 }
@@ -83,11 +90,11 @@ const removeToast = (id) => {
 }
 
 .toast-info {
-  border-left-color: #2196F3;
+  border-left-color: #2196f3;
 }
 
 .toast-success {
-  border-left-color: #4CAF50;
+  border-left-color: #4caf50;
 }
 
 .toast-warning {
@@ -165,15 +172,15 @@ const removeToast = (id) => {
 /* Modo claro */
 .light-mode .toast {
   background: #f5f5f5;
-  border-left-color: #4CAF50;
+  border-left-color: #4caf50;
 }
 
 .light-mode .toast-info {
-  border-left-color: #2196F3;
+  border-left-color: #2196f3;
 }
 
 .light-mode .toast-success {
-  border-left-color: #4CAF50;
+  border-left-color: #4caf50;
 }
 
 .light-mode .toast-warning {

@@ -7,7 +7,11 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build && electron-builder",
-    "postinstall": "electron-builder install-app-deps"
+    "postinstall": "electron-builder install-app-deps",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write \"**/*.{js,vue,json,md,css,html}\" --ignore-path .prettierignore",
+    "format:check": "prettier --check \"**/*.{js,vue,json,md,css,html}\" --ignore-path .prettierignore"
   },
   "dependencies": {
     "better-sqlite3": "^12.5.0",
@@ -18,12 +22,22 @@
     "zod": "^4.3.5"
   },
   "devDependencies": {
+    "@babel/eslint-parser": "^7.28.5",
+    "@eslint/js": "^9.39.2",
     "@vitejs/plugin-vue": "^6.0.3",
+    "@vue/eslint-config-prettier": "^10.2.0",
     "electron": "^39.2.7",
     "electron-builder": "^26.0.12",
+    "eslint": "^9.39.2",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-prettier": "^5.5.4",
+    "eslint-plugin-vue": "^10.6.2",
+    "globals": "^17.0.0",
+    "prettier": "^3.7.4",
     "vite": "^7.3.0",
     "vite-plugin-electron": "^0.29.0",
-    "vite-plugin-electron-renderer": "^0.14.6"
+    "vite-plugin-electron-renderer": "^0.14.6",
+    "vue-eslint-parser": "^10.2.0"
   },
   "build": {
     "appId": "com.user.myrientapp",

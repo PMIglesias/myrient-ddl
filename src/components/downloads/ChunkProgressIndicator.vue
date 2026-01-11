@@ -1,40 +1,61 @@
 <template>
-  <div v-if="shouldShow" class="chunk-progress-container">
+  <div
+    v-if="shouldShow"
+    class="chunk-progress-container"
+  >
     <!-- Información general de chunks -->
     <div class="chunk-summary">
       <span class="chunk-stats">
         {{ completedChunks }}/{{ totalChunks }} chunks
-        <span v-if="activeChunks > 0" class="active-chunks">({{ activeChunks }} activos)</span>
+        <span
+          v-if="activeChunks > 0"
+          class="active-chunks"
+        >({{ activeChunks }} activos)</span>
       </span>
     </div>
 
     <!-- Visualización de chunks (expandible) -->
     <div class="chunks-visualization">
-      <div 
-        v-for="chunk in sortedChunks" 
+      <div
+        v-for="chunk in sortedChunks"
         :key="chunk.index"
         class="chunk-item"
         :class="getChunkClass(chunk)"
         :title="getChunkTooltip(chunk)"
       >
-        <div class="chunk-bar" :style="{ width: (chunk.progress * 100) + '%' }"></div>
+        <div
+          class="chunk-bar"
+          :style="{ width: chunk.progress * 100 + '%' }"
+        />
         <span class="chunk-index">{{ chunk.index }}</span>
-        <span class="chunk-speed" v-if="chunk.speed > 0">
+        <span
+          v-if="chunk.speed > 0"
+          class="chunk-speed"
+        >
           {{ formatSpeed(chunk.speed) }}
         </span>
       </div>
     </div>
 
     <!-- Indicador de merge si está fusionando -->
-    <div v-if="mergeProgress !== undefined" class="merge-progress">
+    <div
+      v-if="mergeProgress !== undefined"
+      class="merge-progress"
+    >
       <div class="merge-info">
         <span class="merge-label">🔄 Fusionando chunks...</span>
         <span class="merge-percent">{{ Math.round(mergeProgress * 100) }}%</span>
       </div>
       <div class="merge-bar">
-        <div class="merge-bar-fill" :style="{ width: (mergeProgress * 100) + '%' }"></div>
+        <div
+          class="merge-bar-fill"
+          :style="{ width: mergeProgress * 100 + '%' }"
+        />
       </div>
-      <div v-if="mergeSpeed" class="merge-speed">
+      <div
+        v-if="mergeSpeed"
+        class="merge-speed"
+      >
         {{ formatSpeed(mergeSpeed) }}
       </div>
     </div>
@@ -47,40 +68,40 @@ import { computed } from 'vue';
 const props = defineProps({
   chunked: {
     type: Boolean,
-    default: false
+    default: false,
   },
   chunkProgress: {
     type: Array,
-    default: () => []
+    default: () => [],
   },
   activeChunks: {
     type: Number,
-    default: 0
+    default: 0,
   },
   completedChunks: {
     type: Number,
-    default: 0
+    default: 0,
   },
   totalChunks: {
     type: Number,
-    default: 0
+    default: 0,
   },
   mergeProgress: {
     type: Number,
-    default: undefined
+    default: undefined,
   },
   mergeSpeed: {
     type: Number,
-    default: undefined // bytes/seg
+    default: undefined, // bytes/seg
   },
   currentChunk: {
     type: Number,
-    default: undefined
+    default: undefined,
   },
   bytesProcessed: {
     type: Number,
-    default: undefined
-  }
+    default: undefined,
+  },
 });
 
 // Determinar si se debe mostrar el componente
@@ -89,28 +110,32 @@ const shouldShow = computed(() => {
   if (props.mergeProgress !== undefined) {
     return true;
   }
-  
+
   // Mostrar si hay totalChunks > 0 (indica que es una descarga chunked)
   if (props.totalChunks && props.totalChunks > 0) {
     return true;
   }
-  
+
   // Mostrar si hay chunkProgress con datos (incluso si está vacío, puede estar inicializándose)
   if (props.chunkProgress && Array.isArray(props.chunkProgress) && props.chunkProgress.length > 0) {
     return true;
   }
-  
+
   // Mostrar si chunked está explícitamente en true
   if (props.chunked) {
     return true;
   }
-  
+
   return false;
 });
 
 // Ordenar chunks por índice
 const sortedChunks = computed(() => {
-  if (!props.chunkProgress || !Array.isArray(props.chunkProgress) || props.chunkProgress.length === 0) {
+  if (
+    !props.chunkProgress ||
+    !Array.isArray(props.chunkProgress) ||
+    props.chunkProgress.length === 0
+  ) {
     // Si no hay chunkProgress pero hay totalChunks, crear array de chunks pendientes
     if (props.totalChunks > 0) {
       return Array.from({ length: props.totalChunks }, (_, i) => ({
@@ -119,33 +144,33 @@ const sortedChunks = computed(() => {
         speed: 0,
         downloadedBytes: 0,
         totalBytes: 0,
-        state: 'pending'
+        state: 'pending',
       }));
     }
     return [];
   }
-  
+
   return [...props.chunkProgress].sort((a, b) => a.index - b.index);
 });
 
 // Obtener clase CSS para chunk según su estado
-const getChunkClass = (chunk) => {
+const getChunkClass = chunk => {
   if (chunk.progress >= 1) return 'chunk-completed';
   if (chunk.progress > 0) return 'chunk-active';
   return 'chunk-pending';
 };
 
 // Tooltip informativo para cada chunk
-const getChunkTooltip = (chunk) => {
+const getChunkTooltip = chunk => {
   const progress = Math.round(chunk.progress * 100);
   const speed = chunk.speed > 0 ? formatSpeed(chunk.speed) : 'esperando';
   return `Chunk ${chunk.index}: ${progress}% - ${speed}`;
 };
 
 // Formatear velocidad
-const formatSpeed = (speed) => {
+const formatSpeed = speed => {
   if (speed === 0 || speed === undefined || speed === null) return '-';
-  
+
   // Asumir que speed ya está en MB/s si viene del backend
   // Si es muy grande (> 1000), probablemente está en bytes/seg
   let mbps = speed;
@@ -153,13 +178,13 @@ const formatSpeed = (speed) => {
     // Convertir de bytes/seg a MB/s
     mbps = speed / (1024 * 1024);
   }
-  
+
   if (mbps < 0.1) {
     // Mostrar en KB/s si es muy lento
     const kbps = mbps * 1024;
     return `${kbps.toFixed(1)} KB/s`;
   }
-  
+
   return `${mbps.toFixed(2)} MB/s`;
 };
 </script>
@@ -276,7 +301,8 @@ const formatSpeed = (speed) => {
 }
 
 @keyframes pulse {
-  0%, 100% {
+  0%,
+  100% {
     opacity: 0.7;
   }
   50% {
@@ -326,7 +352,8 @@ const formatSpeed = (speed) => {
 }
 
 @keyframes merge-pulse {
-  0%, 100% {
+  0%,
+  100% {
     opacity: 1;
   }
   50% {

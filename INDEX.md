@@ -14,53 +14,53 @@
 
 ### 🚀 Para Comenzar Rápido
 
-| Documento | Lectura | Audiencia |
-|-----------|---------|-----------|
-| **[USUARIO_FINAL.md](USUARIO_FINAL.md)** | 1 min | Para usuarios (UNA LÍNEA) |
-| **[QUICK_START.md](QUICK_START.md)** | 5 min | Para configurar |
-| Resumen rápido de configuración | | |
+| Documento                                | Lectura | Audiencia                 |
+| ---------------------------------------- | ------- | ------------------------- |
+| **[USUARIO_FINAL.md](USUARIO_FINAL.md)** | 1 min   | Para usuarios (UNA LÍNEA) |
+| **[QUICK_START.md](QUICK_START.md)**     | 5 min   | Para configurar           |
+| Resumen rápido de configuración          |         |                           |
 
 ### 📖 Para Usuarios Finales
 
-| Documento | Lectura | Descripción |
-|-----------|---------|------------|
-| **[INSTALLER_README.md](INSTALLER_README.md)** | 10 min | Guía completa de instalación |
-| Instrucciones paso a paso | | Cómo usar Install.bat |
-| Solución de problemas | | Errores más comunes |
+| Documento                                      | Lectura | Descripción                  |
+| ---------------------------------------------- | ------- | ---------------------------- |
+| **[INSTALLER_README.md](INSTALLER_README.md)** | 10 min  | Guía completa de instalación |
+| Instrucciones paso a paso                      |         | Cómo usar Install.bat        |
+| Solución de problemas                          |         | Errores más comunes          |
 
 ### 🔧 Para Configuración de Google Drive
 
-| Documento | Lectura | Descripción |
-|-----------|---------|------------|
-| **[DEPLOYMENT_SETUP.md](DEPLOYMENT_SETUP.md)** | 10 min | Setup para deployment vía URL |
-| Cómo hostear el script | | `irm \| iex` automático |
-| **[GOOGLE_DRIVE_SETUP.md](GOOGLE_DRIVE_SETUP.md)** | 15 min | Configuración de Google Drive |
-| Cómo obtener el ID | | Paso a paso |
-| Opciones avanzadas | | Scripts alternativos |
+| Documento                                          | Lectura | Descripción                   |
+| -------------------------------------------------- | ------- | ----------------------------- |
+| **[DEPLOYMENT_SETUP.md](DEPLOYMENT_SETUP.md)**     | 10 min  | Setup para deployment vía URL |
+| Cómo hostear el script                             |         | `irm \| iex` automático       |
+| **[GOOGLE_DRIVE_SETUP.md](GOOGLE_DRIVE_SETUP.md)** | 15 min  | Configuración de Google Drive |
+| Cómo obtener el ID                                 |         | Paso a paso                   |
+| Opciones avanzadas                                 |         | Scripts alternativos          |
 
 ### 📊 Información Técnica
 
-| Documento | Lectura | Descripción |
-|-----------|---------|------------|
-| **[INSTALLATION_FLOW.md](INSTALLATION_FLOW.md)** | 10 min | Diagramas de flujo |
-| Arquitectura del proceso | | Qué hace cada paso |
-| Resolución de errores | | Puntos críticos |
+| Documento                                        | Lectura | Descripción        |
+| ------------------------------------------------ | ------- | ------------------ |
+| **[INSTALLATION_FLOW.md](INSTALLATION_FLOW.md)** | 10 min  | Diagramas de flujo |
+| Arquitectura del proceso                         |         | Qué hace cada paso |
+| Resolución de errores                            |         | Puntos críticos    |
 
 ### ✅ Para Distribución
 
-| Documento | Lectura | Descripción |
-|-----------|---------|------------|
-| **[DISTRIBUTION_CHECKLIST.md](DISTRIBUTION_CHECKLIST.md)** | 20 min | Checklist completo |
-| 10 fases de preparación | | Pre-lanzamiento |
-| Testing y QA | | Validación |
+| Documento                                                  | Lectura | Descripción        |
+| ---------------------------------------------------------- | ------- | ------------------ |
+| **[DISTRIBUTION_CHECKLIST.md](DISTRIBUTION_CHECKLIST.md)** | 20 min  | Checklist completo |
+| 10 fases de preparación                                    |         | Pre-lanzamiento    |
+| Testing y QA                                               |         | Validación         |
 
 ### 📋 Información del Build
 
-| Documento | Lectura | Descripción |
-|-----------|---------|------------|
-| **[BUILD_README.md](BUILD_README.md)** | 5 min | Info de la compilación |
-| Archivos generados | | Tamaños y descripción |
-| Estructura de proyecto | | Carpetas principales |
+| Documento                              | Lectura | Descripción            |
+| -------------------------------------- | ------- | ---------------------- |
+| **[BUILD_README.md](BUILD_README.md)** | 5 min   | Info de la compilación |
+| Archivos generados                     |         | Tamaños y descripción  |
+| Estructura de proyecto                 |         | Carpetas principales   |
 
 ---
 
@@ -115,17 +115,20 @@ myrient-ddl/
 ## 🔑 Conceptos Clave
 
 ### Instalador Automático
+
 ```
 Install.bat → Ejecuta Install.ps1 → Descarga de Google Drive → Extrae → Instala
 ```
 
 ### Componentes de Distribución
+
 - **Install.bat** (2 KB) - Ejecutor simple para usuarios
 - **Install.ps1** (15 KB) - Script principal con lógica
 - **myrient-ddl-complete.zip** (220 MB) - Alojado en Google Drive
   - Contiene: Setup.exe + BD comprimida (.7z)
 
 ### Flujo de Instalación (5-15 minutos)
+
 1. Usuario ejecuta Install.bat
 2. Script descarga ZIP desde Google Drive
 3. Extrae instalador y BD
@@ -137,13 +140,13 @@ Install.bat → Ejecuta Install.ps1 → Descarga de Google Drive → Extrae → 
 
 ## 📊 Tamaños de Distribución
 
-| Componente | Tamaño | Notas |
-|------------|--------|-------|
-| Install.bat | 2 KB | Distribución |
-| Install.ps1 | 15 KB | Distribución |
-| Instalador (Setup.exe) | 83 MB | En ZIP |
-| BD comprimida (.7z) | 137 MB | En ZIP |
-| ZIP completo | 220 MB | Google Drive |
+| Componente             | Tamaño | Notas        |
+| ---------------------- | ------ | ------------ |
+| Install.bat            | 2 KB   | Distribución |
+| Install.ps1            | 15 KB  | Distribución |
+| Instalador (Setup.exe) | 83 MB  | En ZIP       |
+| BD comprimida (.7z)    | 137 MB | En ZIP       |
+| ZIP completo           | 220 MB | Google Drive |
 
 **Ratio de compresión:** 1900 MB → 137 MB (92.7%)
 
@@ -152,27 +155,27 @@ Install.bat → Ejecuta Install.ps1 → Descarga de Google Drive → Extrae → 
 ## ⚡ Quick Links
 
 **Configuración rápida:**
+
 1. [QUICK_START.md](QUICK_START.md) - 5 minutos
 
-**Instalación para usuarios:**
-2. [INSTALLER_README.md](INSTALLER_README.md) - Enviar a usuarios
+**Instalación para usuarios:** 2. [INSTALLER_README.md](INSTALLER_README.md) - Enviar a usuarios
 
-**Setup de Google Drive:**
-3. [GOOGLE_DRIVE_SETUP.md](GOOGLE_DRIVE_SETUP.md) - Antes de distribuir
+**Setup de Google Drive:** 3. [GOOGLE_DRIVE_SETUP.md](GOOGLE_DRIVE_SETUP.md) - Antes de distribuir
 
-**Pre-lanzamiento:**
-4. [DISTRIBUTION_CHECKLIST.md](DISTRIBUTION_CHECKLIST.md) - Antes de publicar
+**Pre-lanzamiento:** 4. [DISTRIBUTION_CHECKLIST.md](DISTRIBUTION_CHECKLIST.md) - Antes de publicar
 
 ---
 
 ## 🎯 Guía por Rol
 
 ### 👨‍💼 Project Manager
+
 1. Lee [QUICK_START.md](QUICK_START.md)
 2. Lee [DISTRIBUTION_CHECKLIST.md](DISTRIBUTION_CHECKLIST.md)
 3. Coordina las fases de preparación
 
 ### 👨‍💻 Developer
+
 1. Lee [QUICK_START.md](QUICK_START.md)
 2. Lee [GOOGLE_DRIVE_SETUP.md](GOOGLE_DRIVE_SETUP.md)
 3. Configura Google Drive ID
@@ -180,12 +183,14 @@ Install.bat → Ejecuta Install.ps1 → Descarga de Google Drive → Extrae → 
 5. Prueba Install.bat
 
 ### 📞 Support/QA
+
 1. Lee [INSTALLER_README.md](INSTALLER_README.md)
 2. Lee [INSTALLATION_FLOW.md](INSTALLATION_FLOW.md)
 3. Prepara respuestas a errores comunes
 4. Lee [GOOGLE_DRIVE_SETUP.md](GOOGLE_DRIVE_SETUP.md) - sección "Solución de problemas"
 
 ### 👥 End User
+
 1. Lee [INSTALLER_README.md](INSTALLER_README.md)
 2. Descarga Install.bat
 3. Ejecuta Install.bat
@@ -256,18 +261,21 @@ v1.0 - Enero 3, 2026
 ## 🎓 Tutoriales Recomendados
 
 **Para usuarios finales (más rápido):**
+
 1. Lee [USUARIO_FINAL.md](USUARIO_FINAL.md) - 1 minuto
 2. Copia el comando `irm | iex`
 3. Ejecuta en PowerShell como admin
 4. ¡Listo!
 
 **Si tienes que hostear el script:**
+
 1. Abre [DEPLOYMENT_SETUP.md](DEPLOYMENT_SETUP.md)
 2. Sigue los pasos para configurar
 3. Sube deploy.ps1 a tu servidor
 4. Comparte el comando con usuarios
 
 **Si tienes problemas:**
+
 1. Busca tu error en [INSTALLATION_FLOW.md](INSTALLATION_FLOW.md) - Sección "Puntos de Error"
 2. Si no está, consulta [INSTALLER_README.md](INSTALLER_README.md) - "Solución de Problemas"
 3. Si aún no lo resuelves, contacta a soporte
@@ -276,14 +284,14 @@ v1.0 - Enero 3, 2026
 
 ## ✅ Estado del Proyecto
 
-| Componente | Estado | % |
-|-----------|--------|---|
-| Build | ✅ Completada | 100% |
-| Scripts | ✅ Creados | 100% |
-| Documentación | ✅ Completa | 100% |
-| Google Drive | ⏳ Pendiente | 0% |
-| Testing | ⏳ Pendiente | 0% |
-| Distribución | ⏳ Pendiente | 0% |
+| Componente    | Estado        | %    |
+| ------------- | ------------- | ---- |
+| Build         | ✅ Completada | 100% |
+| Scripts       | ✅ Creados    | 100% |
+| Documentación | ✅ Completa   | 100% |
+| Google Drive  | ⏳ Pendiente  | 0%   |
+| Testing       | ⏳ Pendiente  | 0%   |
+| Distribución  | ⏳ Pendiente  | 0%   |
 
 ---
 

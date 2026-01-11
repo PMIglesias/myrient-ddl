@@ -6,13 +6,13 @@
   color-scheme: light dark;
   color: rgba(255, 255, 255, 0.87);
   background-color: #242424;
-  
+
   /* ========================================
      COLOR PRIMARIO (por defecto: verde)
      ======================================== */
-  --primary-color: #4CAF50;
+  --primary-color: #4caf50;
   --primary-color-hover: #45a049;
-  
+
   /* ========================================
      SISTEMA DE ESPACIADO
      ======================================== */
@@ -22,7 +22,7 @@
   --spacing-lg: 24px;
   --spacing-xl: 32px;
   --spacing-2xl: 48px;
-  
+
   /* ========================================
      RADIOS DE BORDE
      ======================================== */
@@ -30,7 +30,7 @@
   --radius-md: 6px;
   --radius-lg: 8px;
   --radius-xl: 12px;
-  
+
   /* ========================================
      SOMBRAS
      ======================================== */
@@ -38,6 +38,15 @@
   --shadow-md: 0 2px 4px rgba(0, 0, 0, 0.2);
   --shadow-lg: 0 4px 8px rgba(0, 0, 0, 0.3);
   --shadow-xl: 0 8px 16px rgba(0, 0, 0, 0.4);
+
+  /* ========================================
+     ALTURAS DE COMPONENTES
+     ======================================== */
+  --titlebar-height: 40px;
+  --header-height: 100px;
+  --search-height: 60px;
+  --padding-height: 50px;
+  --base-content-height: calc(var(--titlebar-height) + var(--header-height) + var(--search-height) + var(--padding-height));
 }
 
 /* Modo claro - cambiar color base del root */
@@ -51,7 +60,9 @@ html.light-mode :root {
   color: #333;
 }
 
-body, html, #app {
+body,
+html,
+#app {
   margin: 0;
   padding: 0;
   height: 100vh;
@@ -358,7 +369,8 @@ body.light-mode .titlebar-btn {
 }
 
 @keyframes pulse {
-  0%, 100% {
+  0%,
+  100% {
     opacity: 1;
   }
   50% {
@@ -609,24 +621,28 @@ body.light-mode #content-container::-webkit-scrollbar-thumb:hover {
 /* La tabla maneja su propio scroll interno para la virtualización */
 
 .status-message {
-    padding: 20px;
-    text-align: center;
-    color: #888;
+  padding: 20px;
+  text-align: center;
+  color: #888;
 }
 
 /* Sección de Carpetas */
-#folders-section, #favorites-section, #downloads-section {
+#folders-section,
+#favorites-section,
+#downloads-section {
   margin-bottom: var(--spacing-xl);
 }
 
-#folders-section h2, #favorites-section h2, #downloads-section h2 {
+#folders-section h2,
+#favorites-section h2,
+#downloads-section h2 {
   color: var(--primary-color);
   margin-bottom: var(--spacing-md);
 }
 
 .folders-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(280px, 100%), 1fr));
   gap: var(--spacing-md);
   margin-bottom: var(--spacing-lg);
 }
@@ -672,7 +688,9 @@ body.light-mode .folder-btn {
 .folder-btn:focus {
   outline: 2px solid var(--primary-color);
   outline-offset: 2px;
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary-color) 30%, transparent), var(--shadow-md);
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--primary-color) 30%, transparent),
+    var(--shadow-md);
 }
 
 .folder-btn:active {
@@ -721,7 +739,7 @@ body.light-mode .folder-btn {
   right: 5px;
   background: transparent;
   border: none;
-  color: #FFD700;
+  color: #ffd700;
   cursor: pointer;
   font-size: 20px;
   padding: 4px 8px;
@@ -740,7 +758,7 @@ body.light-mode .folder-btn {
 }
 
 .favorite-star-btn.active {
-  color: #FFD700;
+  color: #ffd700;
 }
 
 .favorite-star-btn.disabled {
@@ -778,7 +796,7 @@ body.light-mode .folder-btn {
 }
 
 .download-folder-btn {
-  background: #2196F3;
+  background: #2196f3;
   color: white;
   border: none;
   padding: 8px 16px;
@@ -791,15 +809,17 @@ body.light-mode .folder-btn {
 }
 
 .download-folder-btn:hover {
-  background: #1976D2;
+  background: #1976d2;
   transform: translateY(-1px);
   box-shadow: var(--shadow-sm);
 }
 
 .download-folder-btn:focus {
-  outline: 2px solid #2196F3;
+  outline: 2px solid #2196f3;
   outline-offset: 2px;
-  box-shadow: 0 0 0 3px rgba(33, 150, 243, 0.3), var(--shadow-sm);
+  box-shadow:
+    0 0 0 3px rgba(33, 150, 243, 0.3),
+    var(--shadow-sm);
 }
 
 .download-folder-btn:active {
@@ -827,7 +847,9 @@ body.light-mode .folder-btn {
 .download-selected-btn:focus {
   outline: 2px solid var(--primary-color);
   outline-offset: 2px;
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary-color) 30%, transparent), var(--shadow-sm);
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--primary-color) 30%, transparent),
+    var(--shadow-sm);
 }
 
 .download-selected-btn:active {
@@ -843,7 +865,7 @@ body.light-mode .folder-btn {
   padding: 12px 15px !important;
 }
 
-.checkbox-col input[type="checkbox"] {
+.checkbox-col input[type='checkbox'] {
   cursor: pointer;
   width: 16px;
   height: 16px;
@@ -852,8 +874,8 @@ body.light-mode .folder-btn {
 /* Contenedor de tabla con virtualización */
 .table-container {
   /* Altura dinámica basada en viewport para evitar scrollbars anidados */
-  /* Resta: titlebar (40px) + header (~100px) + search (~60px) + padding (~50px) */
-  max-height: calc(100vh - 250px);
+  max-height: calc(100vh - var(--base-content-height));
+  min-height: 300px; /* Mínimo razonable para usabilidad */
   overflow-y: auto;
   overflow-x: auto;
   border: 1px solid #444;
@@ -864,7 +886,8 @@ body.light-mode .folder-btn {
 
 /* Cuando hay carpetas antes de la tabla, ajustar altura */
 #folders-section + #files-section .table-container {
-  max-height: calc(100vh - 400px);
+  max-height: calc(100vh - var(--base-content-height) - 150px);
+  min-height: 250px;
 }
 
 /* Scrollbar personalizado para el contenedor */
@@ -992,7 +1015,8 @@ body.light-mode .folder-btn {
 }
 
 @keyframes float {
-  0%, 100% {
+  0%,
+  100% {
     transform: translateY(0);
   }
   50% {
@@ -1072,6 +1096,44 @@ body.light-mode .folder-btn {
   border-top-color: var(--primary-color);
 }
 
+/* Búsqueda cancelada */
+.search-cancelled {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 60px 20px;
+  gap: 20px;
+  text-align: center;
+}
+
+.search-cancelled-icon {
+  font-size: 48px;
+  animation: fadeIn 0.3s ease-in;
+}
+
+.search-cancelled p {
+  color: #ff9800;
+  font-size: 16px;
+  margin: 0;
+  font-weight: 500;
+}
+
+.light-mode .search-cancelled p {
+  color: #f57c00;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: scale(0.8);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
 /* Sin resultados de búsqueda */
 .search-no-results {
   text-align: center;
@@ -1111,20 +1173,22 @@ body.light-mode .folder-btn {
 
 /* Ajustar altura del contenedor de tabla en resultados de búsqueda */
 #search-results .table-container {
-  max-height: calc(100vh - 350px);
+  max-height: calc(100vh - var(--base-content-height) - 100px);
+  min-height: 250px;
 }
 
-.search-folders-section, .search-files-section {
+.search-folders-section,
+.search-files-section {
   margin-bottom: 30px;
 }
 
-.search-folders-section h3, .search-files-section h3 {
+.search-folders-section h3,
+.search-files-section h3 {
   color: #888;
   font-size: 18px;
   margin-bottom: 15px;
   font-weight: 500;
 }
-
 
 table {
   width: 100%;
@@ -1138,7 +1202,8 @@ thead {
   background-color: #3a3a3a;
 }
 
-th, td {
+th,
+td {
   padding: 12px 15px;
   text-align: left;
   border-bottom: 1px solid #444;
@@ -1165,29 +1230,34 @@ th.sortable:hover {
   opacity: 0.8;
 }
 
-td:nth-child(1) { /* Título */
-  max-width: 400px; 
+td:nth-child(1) {
+  /* Título */
+  max-width: 400px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-td:nth-child(2) { /* Ubicación o Tipo */
+td:nth-child(2) {
+  /* Ubicación o Tipo */
   width: auto;
   max-width: 300px;
   color: #999;
   font-size: 12px;
 }
 
-td:nth-child(3) { /* Fecha */
+td:nth-child(3) {
+  /* Fecha */
   width: auto;
 }
 
-td:nth-child(4) { /* Tamaño */
+td:nth-child(4) {
+  /* Tamaño */
   width: auto;
 }
 
-td:nth-child(5) { /* Descarga */
+td:nth-child(5) {
+  /* Descarga */
   width: 130px;
   text-align: center;
 }
@@ -1325,7 +1395,9 @@ table button:disabled {
 .btn-clear-downloads:focus {
   outline: 2px solid #ff9800;
   outline-offset: 2px;
-  box-shadow: 0 0 0 3px rgba(255, 152, 0, 0.3), var(--shadow-sm);
+  box-shadow:
+    0 0 0 3px rgba(255, 152, 0, 0.3),
+    var(--shadow-sm);
 }
 
 .btn-clear-downloads:active {
@@ -1447,7 +1519,7 @@ table button:disabled {
 .btn-action {
   background-color: transparent;
   border: none;
-  color: #2196F3;
+  color: #2196f3;
   padding: 0;
   width: 60px;
   height: 50px;
@@ -1484,7 +1556,7 @@ table button:disabled {
 
 .btn-action:hover {
   background-color: rgba(33, 150, 243, 0.25);
-  border-color: #2196F3;
+  border-color: #2196f3;
   transform: scale(1.05);
 }
 
@@ -1675,12 +1747,12 @@ table button:disabled {
 
 .status-queued {
   background-color: rgba(255, 152, 0, 0.2);
-  color: #FF9800;
+  color: #ff9800;
 }
 
 .status-downloading {
   background-color: rgba(33, 150, 243, 0.2);
-  color: #2196F3;
+  color: #2196f3;
 }
 
 .status-completed {
@@ -1964,9 +2036,16 @@ table button:disabled {
 }
 
 @keyframes shake {
-  0%, 100% { transform: translateX(0); }
-  25% { transform: translateX(-2px); }
-  75% { transform: translateX(2px); }
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  25% {
+    transform: translateX(-2px);
+  }
+  75% {
+    transform: translateX(2px);
+  }
 }
 
 /* Sección de confirmaciones (legacy - ya no se usa) */
@@ -2112,30 +2191,30 @@ table button:disabled {
 
 /* Contenedor de estado de descargas */
 #downloads-status {
-    flex-shrink: 0;
-    padding: 10px 20px;
-    border-top: 1px solid #444;
-    max-height: 200px;
-    overflow-y: auto;
-    margin: 0 20px;
+  flex-shrink: 0;
+  padding: 10px 20px;
+  border-top: 1px solid #444;
+  max-height: 200px;
+  overflow-y: auto;
+  margin: 0 20px;
 }
 
 .download-item {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    margin-bottom: 5px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 5px;
 }
 
 .download-title {
-    flex-grow: 1;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+  flex-grow: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 progress {
-    width: 200px;
+  width: 200px;
 }
 
 /* Modal de Configuración */
@@ -2329,7 +2408,9 @@ progress {
 
 .color-option-btn.active {
   border-color: #fff;
-  box-shadow: 0 0 0 3px var(--primary-color), 0 4px 12px rgba(0, 0, 0, 0.4);
+  box-shadow:
+    0 0 0 3px var(--primary-color),
+    0 4px 12px rgba(0, 0, 0, 0.4);
   transform: scale(1.15);
 }
 
@@ -2344,7 +2425,9 @@ progress {
 .light-mode .color-option-btn.active,
 body.light-mode .color-option-btn.active {
   border-color: #333;
-  box-shadow: 0 0 0 3px var(--primary-color), 0 4px 12px rgba(0, 0, 0, 0.2);
+  box-shadow:
+    0 0 0 3px var(--primary-color),
+    0 4px 12px rgba(0, 0, 0, 0.2);
 }
 
 /* Configuración de límites de memoria */
@@ -2480,9 +2563,9 @@ body.light-mode .color-option-btn.active {
 }
 
 .number-input:focus {
-  outline: 2px solid #4CAF50;
+  outline: 2px solid #4caf50;
   outline-offset: 2px;
-  border-color: #4CAF50;
+  border-color: #4caf50;
   box-shadow: 0 0 0 3px rgba(76, 175, 80, 0.2);
 }
 
@@ -2506,9 +2589,9 @@ body.light-mode .color-option-btn.active {
 }
 
 .path-input:focus {
-  outline: 2px solid #4CAF50;
+  outline: 2px solid #4caf50;
   outline-offset: 2px;
-  border-color: #4CAF50;
+  border-color: #4caf50;
   box-shadow: 0 0 0 3px rgba(76, 175, 80, 0.2);
 }
 
@@ -2618,7 +2701,9 @@ body.light-mode .color-option-btn.active {
 .primary-btn:focus {
   outline: 2px solid var(--primary-color);
   outline-offset: 2px;
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary-color) 30%, transparent), var(--shadow-md);
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--primary-color) 30%, transparent),
+    var(--shadow-md);
 }
 
 .primary-btn:active {
@@ -2896,7 +2981,7 @@ body.light-mode .color-option-btn.active {
 
 .downloads-header h3 {
   margin: 0;
-  color: #4CAF50;
+  color: #4caf50;
   font-size: 14px;
 }
 
@@ -2951,7 +3036,7 @@ body.light-mode .color-option-btn.active {
 }
 
 .progress-percent {
-  color: #4CAF50;
+  color: #4caf50;
   font-size: 11px;
   font-weight: 600;
   min-width: 35px;
@@ -2959,7 +3044,7 @@ body.light-mode .color-option-btn.active {
 }
 
 .queue-badge {
-  background-color: #FF9800;
+  background-color: #ff9800;
   color: white;
   padding: 2px 6px;
   border-radius: 3px;
@@ -2985,11 +3070,11 @@ body.light-mode .color-option-btn.active {
 }
 
 .download-progress progress::-webkit-progress-value {
-  background-color: #4CAF50;
+  background-color: #4caf50;
 }
 
 .download-progress progress::-moz-progress-bar {
-  background-color: #4CAF50;
+  background-color: #4caf50;
 }
 
 /* Modo claro para descargas */
@@ -3062,7 +3147,7 @@ body.light-mode .color-option-btn.active {
 .filters-header h2 {
   margin: 0;
   font-size: 20px;
-  color: #4CAF50;
+  color: #4caf50;
 }
 
 .filters-body {
@@ -3101,7 +3186,7 @@ body.light-mode .color-option-btn.active {
 }
 
 .filters-section h3 {
-  color: #4CAF50;
+  color: #4caf50;
   margin-bottom: 15px;
   font-size: 18px;
 }
@@ -3147,7 +3232,7 @@ body.light-mode .color-option-btn.active {
 
 .btn-save-preset {
   padding: 8px 16px;
-  background-color: #4CAF50;
+  background-color: #4caf50;
   color: white;
   border: none;
   border-radius: 4px;
@@ -3188,7 +3273,7 @@ body.light-mode .color-option-btn.active {
 
 .btn-add {
   padding: 8px 16px;
-  background-color: #4CAF50;
+  background-color: #4caf50;
   color: white;
   border: none;
   border-radius: 4px;
@@ -3331,13 +3416,13 @@ body.light-mode .color-option-btn.active {
   background-color: #2d2d2d;
 }
 
-.tag-checkbox input[type="checkbox"] {
+.tag-checkbox input[type='checkbox'] {
   cursor: pointer;
   width: 14px;
   height: 14px;
 }
 
-.tag-checkbox input[type="checkbox"]:disabled {
+.tag-checkbox input[type='checkbox']:disabled {
   opacity: 0.3;
   cursor: not-allowed;
 }
@@ -3377,7 +3462,7 @@ body.light-mode .color-option-btn.active {
 }
 
 .stat-value {
-  color: #4CAF50;
+  color: #4caf50;
   font-weight: 600;
   font-size: 16px;
 }
@@ -3401,7 +3486,7 @@ body.light-mode .color-option-btn.active {
 
 /* Botón de filtros en header */
 .filters-btn {
-  background-color: #2196F3;
+  background-color: #2196f3;
   color: white;
   border: none;
   padding: 8px 16px;
@@ -3417,15 +3502,17 @@ body.light-mode .color-option-btn.active {
 }
 
 .filters-btn:hover {
-  background-color: #1976D2;
+  background-color: #1976d2;
   transform: translateY(-1px);
   box-shadow: var(--shadow-sm);
 }
 
 .filters-btn:focus {
-  outline: 2px solid #2196F3;
+  outline: 2px solid #2196f3;
   outline-offset: 2px;
-  box-shadow: 0 0 0 3px rgba(33, 150, 243, 0.3), var(--shadow-sm);
+  box-shadow:
+    0 0 0 3px rgba(33, 150, 243, 0.3),
+    var(--shadow-sm);
 }
 
 .filters-btn:active {
@@ -3434,7 +3521,7 @@ body.light-mode .color-option-btn.active {
 }
 
 .filters-btn.active {
-  background-color: #1976D2;
+  background-color: #1976d2;
   box-shadow: 0 0 0 2px rgba(33, 150, 243, 0.3);
 }
 
@@ -3646,7 +3733,7 @@ body.light-mode .color-option-btn.active {
 }
 
 .light-mode .downloads-table th {
-  color: #4CAF50;
+  color: #4caf50;
 }
 
 /* ========================================
@@ -3655,34 +3742,56 @@ body.light-mode .color-option-btn.active {
 
 /* Extra pequeño (ventanas pequeñas < 576px) */
 @media (max-width: 576px) {
-  /* Barra de título - ocultar indicador de velocidad */
+  /* Barra de título - indicador de velocidad compacto */
   .speed-indicator {
+    max-width: 80px;
+    min-width: 60px;
+    padding: 4px 6px;
+    font-size: 10px;
+    gap: 4px;
+  }
+
+  .speed-value {
+    font-size: 10px;
+    font-weight: 600;
+  }
+
+  .speed-icon {
     display: none;
   }
-  
+
+  .download-name {
+    display: none;
+  }
+
+  .speed-info {
+    flex-direction: row;
+    gap: 4px;
+  }
+
   .titlebar {
     padding: 0 10px;
   }
-  
+
   .titlebar-title {
     font-size: 12px;
   }
-  
+
   .location-path {
     display: none;
   }
-  
+
   /* Header y botones */
   .header-top {
     flex-direction: column;
     align-items: stretch;
   }
-  
+
   .header-buttons {
     width: 100%;
     justify-content: stretch;
   }
-  
+
   .favorites-btn,
   .downloads-btn,
   .filters-btn {
@@ -3691,67 +3800,91 @@ body.light-mode .color-option-btn.active {
     font-size: 13px;
     padding: 8px 12px;
   }
-  
+
   #header {
     margin: 12px;
     margin-bottom: 15px;
   }
-  
+
   #header h1 {
     font-size: 20px;
     text-align: center;
   }
-  
-  /* Breadcrumb - mostrar solo último nivel */
+
+  /* Breadcrumb - mejorado para móviles */
   #breadcrumb {
     font-size: 12px;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    max-width: 100%;
   }
-  
+
+  /* Mostrar solo primer y último elemento, ocultar intermedios */
   .breadcrumb-btn:not(:first-child):not(:last-child) {
     display: none;
   }
-  
+
   .breadcrumb-separator:not(:first-of-type):not(:last-of-type) {
     display: none;
   }
-  
+
+  /* Truncar texto largo en breadcrumb */
+  .breadcrumb-btn {
+    max-width: 120px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* El último elemento (ubicación actual) puede ser más largo */
+  .breadcrumb-btn:last-child {
+    max-width: 180px;
+  }
+
+  /* El primer elemento (Inicio) puede ser más corto */
+  .breadcrumb-btn:first-child {
+    max-width: 80px;
+  }
+
   /* Búsqueda */
   #search-container {
     margin: 0 12px 15px 12px;
     flex-direction: column;
     gap: 8px;
   }
-  
+
   #search-input {
     border-radius: 4px;
   }
-  
+
   #search-container button {
     border-radius: 4px;
     width: 100%;
   }
-  
+
   /* Contenedor de contenido */
   #content-container {
     padding: 0 12px 15px 12px;
   }
-  
-  /* Grid de carpetas - una columna */
+
+  /* Grid de carpetas - una columna optimizada */
   .folders-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(auto-fill, minmax(min(200px, 100%), 1fr));
     gap: 10px;
   }
-  
+
   .folder-btn {
     padding: 16px 12px;
     font-size: 14px;
   }
-  
+
   /* Tablas - convertir a vista de cards */
   .table-container {
     border: none;
   }
-  
+
   .table-container table,
   .table-container thead,
   .table-container tbody,
@@ -3760,11 +3893,11 @@ body.light-mode .color-option-btn.active {
   .table-container tr {
     display: block;
   }
-  
+
   .table-container thead {
     display: none;
   }
-  
+
   .table-container tr {
     margin-bottom: 12px;
     border: 1px solid #444;
@@ -3773,7 +3906,7 @@ body.light-mode .color-option-btn.active {
     background-color: #2d2d2d;
     box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
   }
-  
+
   .table-container td {
     border: none;
     padding: 8px 0;
@@ -3781,17 +3914,17 @@ body.light-mode .color-option-btn.active {
     position: relative;
     padding-left: 40%;
   }
-  
+
   .table-container td:before {
-    content: attr(data-label) ": ";
+    content: attr(data-label) ': ';
     font-weight: 600;
-    color: #4CAF50;
+    color: #4caf50;
     position: absolute;
     left: 0;
     width: 35%;
     text-align: left;
   }
-  
+
   .checkbox-col {
     width: auto;
     min-width: auto;
@@ -3799,11 +3932,11 @@ body.light-mode .color-option-btn.active {
     padding: 8px 0 !important;
     text-align: left !important;
   }
-  
+
   .checkbox-col:before {
-    content: "Seleccionar: ";
+    content: 'Seleccionar: ';
   }
-  
+
   /* Tabla de descargas responsive */
   .downloads-table table,
   .downloads-table thead,
@@ -3813,11 +3946,11 @@ body.light-mode .color-option-btn.active {
   .downloads-table tr {
     display: block;
   }
-  
+
   .downloads-table thead {
     display: none;
   }
-  
+
   .downloads-table tr {
     margin-bottom: 12px;
     border: 1px solid #444;
@@ -3826,7 +3959,7 @@ body.light-mode .color-option-btn.active {
     background-color: #2d2d2d;
     box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
   }
-  
+
   .downloads-table td {
     border: none;
     padding: 8px 0;
@@ -3834,32 +3967,32 @@ body.light-mode .color-option-btn.active {
     position: relative;
     padding-left: 40%;
   }
-  
+
   .downloads-table td:before {
-    content: attr(data-label) ": ";
+    content: attr(data-label) ': ';
     font-weight: 600;
-    color: #4CAF50;
+    color: #4caf50;
     position: absolute;
     left: 0;
     width: 35%;
     text-align: left;
   }
-  
+
   .downloads-table .checkbox-col {
     width: auto;
     padding: 8px 0 !important;
     text-align: left !important;
   }
-  
+
   .downloads-table .checkbox-col:before {
-    content: "Seleccionar: ";
+    content: 'Seleccionar: ';
   }
-  
+
   .downloads-table .action-buttons-row {
     justify-content: flex-start;
     flex-wrap: wrap;
   }
-  
+
   /* Header de descargas */
   .downloads-header,
   .files-header {
@@ -3867,24 +4000,24 @@ body.light-mode .color-option-btn.active {
     align-items: stretch;
     gap: 10px;
   }
-  
+
   .header-actions {
     flex-wrap: wrap;
     width: 100%;
   }
-  
+
   .btn-header {
     flex: 1 1 auto;
     min-width: calc(50% - 4px);
   }
-  
+
   /* Paneles laterales - full screen */
   .settings-panel,
   .filters-panel {
     width: 100%;
     right: 0;
   }
-  
+
   /* Botones de acción más pequeños */
   .btn-action {
     min-width: 32px;
@@ -3895,17 +4028,39 @@ body.light-mode .color-option-btn.active {
     height: 32px;
     font-size: 14px;
   }
-  
-  /* Notificaciones toast más pequeñas */
-  .confirmation-toast {
-    min-width: 280px;
-    max-width: calc(100vw - 24px);
-  }
-  
+
+  /* Notificaciones toast mejoradas para móviles */
   .confirmation-notifications {
     right: 12px;
     bottom: 12px;
-    max-width: calc(100vw - 24px);
+    left: 12px;
+    max-width: none;
+    width: auto;
+  }
+
+  .confirmation-toast {
+    width: 100%;
+    min-width: auto;
+    max-width: none;
+    box-sizing: border-box;
+  }
+}
+
+/* Breakpoint intermedio (resoluciones medianas < 900px) */
+@media (max-width: 900px) {
+  /* Botones del header - evitar solapamiento */
+  .header-buttons {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .favorites-btn,
+  .downloads-btn,
+  .filters-btn {
+    font-size: 13px;
+    padding: 8px 12px;
+    flex: 1 1 calc(33.333% - 6px);
+    min-width: 120px;
   }
 }
 
@@ -3917,90 +4072,91 @@ body.light-mode .color-option-btn.active {
     padding: 4px 8px;
     font-size: 11px;
   }
-  
+
   .download-name {
     display: none;
   }
-  
+
   .speed-info {
     flex-direction: row;
     gap: 6px;
   }
-  
+
   /* Header */
   #header {
     margin: 15px;
     margin-bottom: 15px;
   }
-  
+
   .header-buttons {
     gap: 8px;
   }
-  
+
   .favorites-btn,
   .downloads-btn,
   .filters-btn {
     font-size: 13px;
     padding: 8px 14px;
   }
-  
+
   /* Breadcrumb - simplificar */
   #breadcrumb {
     font-size: 13px;
     overflow: hidden;
     text-overflow: ellipsis;
   }
-  
+
   /* Búsqueda */
   #search-container {
     margin: 0 15px 15px 15px;
   }
-  
+
   /* Contenedor de contenido */
   #content-container {
     padding: 0 15px 15px 15px;
   }
-  
+
   /* Grid de carpetas - 2 columnas máximo */
   .folders-grid {
-    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(min(240px, 100%), 1fr));
     gap: 12px;
   }
-  
+
   .folder-btn {
     padding: 18px 14px;
     font-size: 15px;
   }
-  
+
   /* Tablas - ocultar algunas columnas menos importantes */
-  .table-container td:nth-child(3) { /* Ubicación/Tipo */
+  .table-container td:nth-child(3) {
+    /* Ubicación/Tipo */
     display: none;
   }
-  
+
   .downloads-table .download-path {
     display: none;
   }
-  
+
   .downloads-table .download-date {
     font-size: 12px;
   }
-  
+
   /* Acciones de descarga más compactas */
   .downloads-header .header-actions {
     gap: 6px;
   }
-  
+
   .btn-header {
     font-size: 13px;
     padding: 6px 12px;
   }
-  
+
   /* Paneles laterales */
   .settings-panel {
     width: 90%;
     max-width: 500px;
   }
-  
+
   .filters-panel {
     width: 90%;
     max-width: 550px;
@@ -4011,14 +4167,15 @@ body.light-mode .color-option-btn.active {
 @media (max-width: 992px) {
   /* Grid de carpetas - ajustar */
   .folders-grid {
-    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(min(260px, 100%), 1fr));
   }
-  
+
   /* Tablas - reducir padding */
-  th, td {
+  th,
+  td {
     padding: 10px 12px;
   }
-  
+
   /* Header */
   #header {
     margin: 18px;
@@ -4032,9 +4189,62 @@ body.light-mode .color-option-btn.active {
     background-color: #f9f9f9;
     border-color: #ddd;
   }
-  
+
   .light-mode .table-container td:before,
   .light-mode .downloads-table td:before {
-    color: #4CAF50;
+    color: #4caf50;
   }
+}
+
+/* ========================================
+   ESTILOS DE ACCESIBILIDAD
+   ======================================== */
+
+/* Clase para ocultar elementos visualmente pero mantenerlos accesibles para lectores de pantalla */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+}
+
+/* Mejoras de focus para accesibilidad */
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--primary-color, #4caf50);
+  outline-offset: 2px;
+}
+
+/* Mejorar contraste de focus en modo claro */
+.light-mode button:focus-visible,
+.light-mode input:focus-visible,
+.light-mode select:focus-visible,
+.light-mode textarea:focus-visible,
+.light-mode a:focus-visible {
+  outline-color: var(--primary-color, #4caf50);
+}
+
+/* Skip link para navegación por teclado */
+.skip-link {
+  position: absolute;
+  top: -40px;
+  left: 0;
+  background: var(--primary-color, #4caf50);
+  color: white;
+  padding: 8px 16px;
+  text-decoration: none;
+  z-index: 10000;
+  border-radius: 0 0 4px 0;
+}
+
+.skip-link:focus {
+  top: 0;
 }

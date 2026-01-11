@@ -9,6 +9,7 @@ La base de datos `myrient.db` (1.9 GB descomprimida) **NO** está incluida en el
 ### Opción 1: Descarga Directa (Recomendado para Usuarios)
 
 Si ya tienes el ZIP de distribución `myrient-ddl-complete.zip`:
+
 - La base de datos ya está incluida
 - Solo extrae y ejecuta la aplicación
 
@@ -49,6 +50,7 @@ Copy-Item $installedDb -Destination "resources\myrient.db"
 ⚠️ Esta opción es solo para usuarios avanzados que quieren crear la base de datos desde cero.
 
 Requiere:
+
 1. Scraper del sitio de Myrient
 2. Python 3.8+
 3. SQLite3
@@ -58,6 +60,7 @@ Requiere:
 ## 🗂️ Ubicación Correcta
 
 La base de datos debe estar en:
+
 ```
 myrient-ddl/
 └── resources/
@@ -98,5 +101,6 @@ El tamaño debe ser aproximadamente **1.9 GB**.
 ## 📞 Soporte
 
 Si tienes problemas para obtener la base de datos:
+
 1. Abre un [Issue en GitHub](https://github.com/tu-usuario/myrient-ddl/issues)
 2. Incluye el error específico que estás recibiendo

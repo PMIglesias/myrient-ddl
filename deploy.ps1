@@ -1,7 +1,7 @@
 # Myrient DDL - Deploy Script
 # Ejecutar con: irm https://genial-worm.static.domains/show-myrient-links-enhanced | iex
 
-# Configuracion de descarga
+# Configuración de descarga
 $DOWNLOAD_URL = "https://2s2mivnvwi.ufs.sh/f/AOGqt0a3qZt65nq46wb8F4x3cXUrAR7OVIlkLqBaudDjN2He"
 $TEMP_PATH = Join-Path $env:TEMP "MyrientDDL_Deploy_$(Get-Random)"
 
@@ -33,7 +33,7 @@ function Invoke-FileDownload {
         [int]$MaxRetries = 3
     )
     
-    # Optimizar configuracion de red para descarga rapida
+    # Optimizar configuración de red para descarga rápida
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
     [Net.ServicePointManager]::DefaultConnectionLimit = 100
     [Net.ServicePointManager]::Expect100Continue = $false
@@ -74,7 +74,7 @@ function Invoke-FileDownload {
                 Start-Sleep -Milliseconds 500
                 if ($stopwatch.Elapsed -gt $timeout) {
                     $webClient.CancelAsync()
-                    throw "Timeout: La descarga tardo mas de 15 minutos"
+                    throw "Timeout: La descarga tardó más de 15 minutos"
                 }
             }
             
@@ -88,9 +88,9 @@ function Invoke-FileDownload {
             if (Test-Path $OutputPath) {
                 $fileSize = (Get-Item $OutputPath).Length
                 
-                # Validar tamaño minimo (debe ser mas de 100 MB para el archivo completo)
+                # Validar tamaño mínimo (debe ser más de 100 MB para el archivo completo)
                 if ($fileSize -lt 100000000) {
-                    Write-Status "   Archivo incompleto (tamano: $([math]::Round($fileSize / 1MB, 2)) MB)" "Warning"
+                    Write-Status "   Archivo incompleto (tamaño: $([math]::Round($fileSize / 1MB, 2)) MB)" "Warning"
                     Remove-Item $OutputPath -Force -ErrorAction SilentlyContinue
                     $retryCount++
                     if ($retryCount -lt $MaxRetries) {
@@ -134,17 +134,17 @@ $ZipFile = Join-Path $TEMP_PATH "myrient-ddl-complete.zip"
 Write-Status "   Ambiente preparado" "Success"
 
 # Paso 2: Descargar desde servidor
-Write-Status "Paso 2: Descargando aplicacion..." "Info"
+Write-Status "Paso 2: Descargando aplicación..." "Info"
 Write-Host "   Origen: ufs.sh" -ForegroundColor DarkGray
-Write-Host "   Tamano: ~320 MB (puede tardar varios minutos)" -ForegroundColor DarkGray
+Write-Host "   Tamaño: ~320 MB (puede tardar varios minutos)" -ForegroundColor DarkGray
 
 $downloadSuccess = Invoke-FileDownload -Url $DOWNLOAD_URL -OutputPath $ZipFile
 
 if (-not $downloadSuccess) {
     Write-Status "   Error: No se pudo descargar el archivo" "Error"
     Write-Status "   Verifica:" "Warning"
-    Write-Host "   - Tu conexion a Internet"
-    Write-Host "   - Que el servidor de descarga esta disponible"
+    Write-Host "   - Tu conexión a Internet"
+    Write-Host "   - Que el servidor de descarga está disponible"
     Remove-Item $TEMP_PATH -Recurse -Force -ErrorAction SilentlyContinue
     Read-Host "Presiona Enter para salir"
     exit 1
@@ -159,10 +159,10 @@ try {
     $zipFile_obj.Dispose()
     
     if ($entryCount -gt 0) {
-        Write-Status "   Archivo valido ($entryCount archivos)" "Success"
+        Write-Status "   Archivo válido ($entryCount archivos)" "Success"
     }
     else {
-        throw "ZIP vacio o corrupto"
+        throw "ZIP vacío o corrupto"
     }
 }
 catch {
@@ -174,7 +174,7 @@ catch {
 }
 
 # Paso 4: Extraer archivos a carpeta de instalacion
-Write-Status "Paso 4: Extrayendo aplicacion..." "Info"
+Write-Status "Paso 4: Extrayendo aplicación..." "Info"
 try {
     # Crear carpeta de instalacion si no existe
     if (Test-Path $INSTALL_PATH) {
@@ -184,7 +184,7 @@ try {
     
     # Extraer todo el contenido
     Expand-Archive -Path $ZipFile -DestinationPath $INSTALL_PATH -Force
-    Write-Status "   Aplicacion extraida en: $INSTALL_PATH" "Success"
+    Write-Status "   Aplicación extraída en: $INSTALL_PATH" "Success"
 }
 catch {
     Write-Status "   Error al extraer: $_" "Error"
@@ -221,7 +221,7 @@ if (Test-Path $DbPath) {
         $destinationPath = Join-Path $ResourcesPath "myrient.db"
         Move-Item -Path $DbPath -Destination $destinationPath -Force
         
-        # Verificar que el archivo esta en su lugar
+        # Verificar que el archivo está en su lugar
         Start-Sleep -Milliseconds 300
         if (Test-Path $destinationPath) {
             Write-Status "   Base de datos movida a resources/" "Success"
@@ -254,7 +254,7 @@ else {
         }
     }
     else {
-        Write-Status "   ERROR: No se encontro myrient.db" "Error"
+        Write-Status "   ERROR: No se encontró myrient.db" "Error"
     }
 }
 
@@ -266,7 +266,7 @@ if ($MainExe) {
     Write-Status "   Ejecutable encontrado: $($MainExe.Name)" "Success"
 }
 else {
-    Write-Status "   No se encontro el ejecutable principal" "Error"
+    Write-Status "   No se encontró el ejecutable principal" "Error"
     Remove-Item $TEMP_PATH -Recurse -Force -ErrorAction SilentlyContinue
     Read-Host "Presiona Enter para salir"
     exit 1
@@ -303,19 +303,19 @@ catch {
 
 # Finalizacion
 Write-Header "Instalacion Completada"
-Write-Status "La aplicacion Myrient DDL ha sido instalada exitosamente." "Success"
+Write-Status "La aplicación Myrient DDL ha sido instalada exitosamente." "Success"
 Write-Host ""
 Write-Host "Ubicacion: $INSTALL_PATH" -ForegroundColor Green
 Write-Host "Ejecutable: $($MainExe.FullName)" -ForegroundColor Green
 Write-Host ""
 
-# Ejecutar la aplicacion
+# Ejecutar la aplicación
 Write-Status "Iniciando Myrient DDL..." "Info"
 Start-Sleep -Seconds 2
 
 try {
     Start-Process -FilePath $MainExe.FullName -WorkingDirectory $INSTALL_PATH
-    Write-Status "Aplicacion iniciada exitosamente" "Success"
+    Write-Status "Aplicación iniciada exitosamente" "Success"
 }
 catch {
     Write-Status "Error al iniciar: $_" "Warning"

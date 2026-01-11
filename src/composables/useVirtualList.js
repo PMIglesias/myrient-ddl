@@ -1,9 +1,9 @@
 /**
  * useVirtualList - Composable para virtualización de listas
- * 
+ *
  * Implementa virtualización eficiente para listas grandes (1000+ items)
  * sin dependencias externas.
- * 
+ *
  * Características:
  * - Renderiza solo items visibles + buffer (overscan)
  * - Soporta altura de fila fija o variable
@@ -23,243 +23,240 @@ import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue';
  * @param {Ref<HTMLElement>} options.scrollElement - Elemento con scroll (opcional)
  */
 export function useVirtualList(options) {
-    const {
-        items,
-        itemHeight = 40,
-        containerHeight = 400,
-        overscan = 5,
-        scrollElement = null
-    } = options;
+  const {
+    items,
+    itemHeight = 40,
+    containerHeight = 400,
+    overscan = 5,
+    scrollElement = null,
+  } = options;
 
-    // =====================
-    // ESTADO
-    // =====================
+  // =====================
+  // ESTADO
+  // =====================
 
-    const scrollTop = ref(0);
-    const scrollContainerRef = ref(null);
-    const isScrolling = ref(false);
-    let scrollTimeout = null;
-    let rafId = null;
+  const scrollTop = ref(0);
+  const scrollContainerRef = ref(null);
+  const isScrolling = ref(false);
+  let scrollTimeout = null;
+  let rafId = null;
 
-    // =====================
-    // COMPUTED
-    // =====================
+  // =====================
+  // COMPUTED
+  // =====================
 
-    // Altura total de todos los items
-    const totalHeight = computed(() => {
-        return items.value.length * itemHeight;
-    });
+  // Altura total de todos los items
+  const totalHeight = computed(() => {
+    return items.value.length * itemHeight;
+  });
 
-    // Número de items que caben en el viewport
-    const visibleCount = computed(() => {
-        return Math.ceil(containerHeight / itemHeight);
-    });
+  // Número de items que caben en el viewport
+  const visibleCount = computed(() => {
+    return Math.ceil(containerHeight / itemHeight);
+  });
 
-    // Índice del primer item visible
-    const startIndex = computed(() => {
-        const index = Math.floor(scrollTop.value / itemHeight);
-        return Math.max(0, index - overscan);
-    });
+  // Índice del primer item visible
+  const startIndex = computed(() => {
+    const index = Math.floor(scrollTop.value / itemHeight);
+    return Math.max(0, index - overscan);
+  });
 
-    // Índice del último item visible (exclusivo)
-    const endIndex = computed(() => {
-        const end = startIndex.value + visibleCount.value + (overscan * 2);
-        return Math.min(items.value.length, end);
-    });
+  // Índice del último item visible (exclusivo)
+  const endIndex = computed(() => {
+    const end = startIndex.value + visibleCount.value + overscan * 2;
+    return Math.min(items.value.length, end);
+  });
 
-    // Offset Y para posicionar los items visibles
-    const offsetY = computed(() => {
-        return startIndex.value * itemHeight;
-    });
+  // Offset Y para posicionar los items visibles
+  const offsetY = computed(() => {
+    return startIndex.value * itemHeight;
+  });
 
-    // Solo los items visibles
-    const visibleItems = computed(() => {
-        return items.value.slice(startIndex.value, endIndex.value);
-    });
+  // Solo los items visibles
+  const visibleItems = computed(() => {
+    return items.value.slice(startIndex.value, endIndex.value);
+  });
 
-    // Items visibles con índice original
-    const visibleItemsWithIndex = computed(() => {
-        return items.value
-            .slice(startIndex.value, endIndex.value)
-            .map((item, i) => ({
-                ...item,
-                _virtualIndex: startIndex.value + i
-            }));
-    });
-
-    // Rango de items visibles (para debugging)
-    const visibleRange = computed(() => ({
-        start: startIndex.value,
-        end: endIndex.value,
-        count: endIndex.value - startIndex.value,
-        total: items.value.length
+  // Items visibles con índice original
+  const visibleItemsWithIndex = computed(() => {
+    return items.value.slice(startIndex.value, endIndex.value).map((item, i) => ({
+      ...item,
+      _virtualIndex: startIndex.value + i,
     }));
+  });
 
-    // =====================
-    // MÉTODOS
-    // =====================
+  // Rango de items visibles (para debugging)
+  const visibleRange = computed(() => ({
+    start: startIndex.value,
+    end: endIndex.value,
+    count: endIndex.value - startIndex.value,
+    total: items.value.length,
+  }));
 
-    /**
-     * Handler de scroll con throttling via RAF
-     */
-    const onScroll = (event) => {
-        if (rafId) return;
-        
-        rafId = requestAnimationFrame(() => {
-            scrollTop.value = event.target.scrollTop;
-            isScrolling.value = true;
-            
-            // Reset flag después de un delay
-            clearTimeout(scrollTimeout);
-            scrollTimeout = setTimeout(() => {
-                isScrolling.value = false;
-            }, 150);
-            
-            rafId = null;
-        });
-    };
+  // =====================
+  // MÉTODOS
+  // =====================
 
-    /**
-     * Scroll programático a un índice específico
-     */
-    const scrollToIndex = (index, behavior = 'auto') => {
-        const container = scrollContainerRef.value || scrollElement?.value;
-        if (!container) return;
+  /**
+   * Handler de scroll con throttling via RAF
+   */
+  const onScroll = event => {
+    if (rafId) return;
 
-        const targetScrollTop = index * itemHeight;
-        
-        if (behavior === 'smooth') {
-            container.scrollTo({
-                top: targetScrollTop,
-                behavior: 'smooth'
-            });
-        } else {
-            container.scrollTop = targetScrollTop;
-        }
-    };
+    rafId = requestAnimationFrame(() => {
+      scrollTop.value = event.target.scrollTop;
+      isScrolling.value = true;
 
-    /**
-     * Scroll al inicio
-     */
-    const scrollToTop = (behavior = 'auto') => {
-        scrollToIndex(0, behavior);
-    };
+      // Reset flag después de un delay
+      clearTimeout(scrollTimeout);
+      scrollTimeout = setTimeout(() => {
+        isScrolling.value = false;
+      }, 150);
 
-    /**
-     * Scroll al final
-     */
-    const scrollToBottom = (behavior = 'auto') => {
-        scrollToIndex(items.value.length - 1, behavior);
-    };
-
-    /**
-     * Verifica si un índice está visible
-     */
-    const isIndexVisible = (index) => {
-        return index >= startIndex.value && index < endIndex.value;
-    };
-
-    /**
-     * Obtiene el índice del item en una posición Y
-     */
-    const getIndexAtPosition = (y) => {
-        return Math.floor(y / itemHeight);
-    };
-
-    /**
-     * Reset del scroll (útil cuando cambian los items)
-     */
-    const resetScroll = () => {
-        scrollTop.value = 0;
-        const container = scrollContainerRef.value || scrollElement?.value;
-        if (container) {
-            container.scrollTop = 0;
-        }
-    };
-
-    // =====================
-    // WATCHERS
-    // =====================
-
-    // Resetear scroll cuando cambian los items significativamente
-    watch(() => items.value.length, (newLen, oldLen) => {
-        // Solo resetear si la lista cambió drásticamente
-        if (Math.abs(newLen - oldLen) > visibleCount.value) {
-            nextTick(() => resetScroll());
-        }
+      rafId = null;
     });
+  };
 
-    // =====================
-    // LIFECYCLE
-    // =====================
+  /**
+   * Scroll programático a un índice específico
+   */
+  const scrollToIndex = (index, behavior = 'auto') => {
+    const container = scrollContainerRef.value || scrollElement?.value;
+    if (!container) return;
 
-    onMounted(() => {
-        // Setup inicial si es necesario
-    });
+    const targetScrollTop = index * itemHeight;
 
-    onUnmounted(() => {
-        // Limpiar RAF y timeouts
-        if (rafId) {
-            cancelAnimationFrame(rafId);
-        }
-        if (scrollTimeout) {
-            clearTimeout(scrollTimeout);
-        }
-    });
+    if (behavior === 'smooth') {
+      container.scrollTo({
+        top: targetScrollTop,
+        behavior: 'smooth',
+      });
+    } else {
+      container.scrollTop = targetScrollTop;
+    }
+  };
 
-    // =====================
-    // RETURN
-    // =====================
+  /**
+   * Scroll al inicio
+   */
+  const scrollToTop = (behavior = 'auto') => {
+    scrollToIndex(0, behavior);
+  };
 
-    return {
-        // Refs
-        scrollContainerRef,
-        
-        // Estado
-        scrollTop,
-        isScrolling,
-        
-        // Computed - Dimensiones
-        totalHeight,
-        visibleCount,
-        offsetY,
-        
-        // Computed - Índices
-        startIndex,
-        endIndex,
-        visibleRange,
-        
-        // Computed - Items
-        visibleItems,
-        visibleItemsWithIndex,
-        
-        // Métodos
-        onScroll,
-        scrollToIndex,
-        scrollToTop,
-        scrollToBottom,
-        isIndexVisible,
-        getIndexAtPosition,
-        resetScroll
-    };
+  /**
+   * Scroll al final
+   */
+  const scrollToBottom = (behavior = 'auto') => {
+    scrollToIndex(items.value.length - 1, behavior);
+  };
+
+  /**
+   * Verifica si un índice está visible
+   */
+  const isIndexVisible = index => {
+    return index >= startIndex.value && index < endIndex.value;
+  };
+
+  /**
+   * Obtiene el índice del item en una posición Y
+   */
+  const getIndexAtPosition = y => {
+    return Math.floor(y / itemHeight);
+  };
+
+  /**
+   * Reset del scroll (útil cuando cambian los items)
+   */
+  const resetScroll = () => {
+    scrollTop.value = 0;
+    const container = scrollContainerRef.value || scrollElement?.value;
+    if (container) {
+      container.scrollTop = 0;
+    }
+  };
+
+  // =====================
+  // WATCHERS
+  // =====================
+
+  // Resetear scroll cuando cambian los items significativamente
+  watch(
+    () => items.value.length,
+    (newLen, oldLen) => {
+      // Solo resetear si la lista cambió drásticamente
+      if (Math.abs(newLen - oldLen) > visibleCount.value) {
+        nextTick(() => resetScroll());
+      }
+    }
+  );
+
+  // =====================
+  // LIFECYCLE
+  // =====================
+
+  onMounted(() => {
+    // Setup inicial si es necesario
+  });
+
+  onUnmounted(() => {
+    // Limpiar RAF y timeouts
+    if (rafId) {
+      cancelAnimationFrame(rafId);
+    }
+    if (scrollTimeout) {
+      clearTimeout(scrollTimeout);
+    }
+  });
+
+  // =====================
+  // RETURN
+  // =====================
+
+  return {
+    // Refs
+    scrollContainerRef,
+
+    // Estado
+    scrollTop,
+    isScrolling,
+
+    // Computed - Dimensiones
+    totalHeight,
+    visibleCount,
+    offsetY,
+
+    // Computed - Índices
+    startIndex,
+    endIndex,
+    visibleRange,
+
+    // Computed - Items
+    visibleItems,
+    visibleItemsWithIndex,
+
+    // Métodos
+    onScroll,
+    scrollToIndex,
+    scrollToTop,
+    scrollToBottom,
+    isIndexVisible,
+    getIndexAtPosition,
+    resetScroll,
+  };
 }
 
 /**
  * Hook simplificado para casos comunes
  */
 export function useSimpleVirtualList(items, options = {}) {
-    const {
-        itemHeight = 40,
-        containerHeight = 400,
-        overscan = 5
-    } = options;
+  const { itemHeight = 40, containerHeight = 400, overscan = 5 } = options;
 
-    return useVirtualList({
-        items,
-        itemHeight,
-        containerHeight,
-        overscan
-    });
+  return useVirtualList({
+    items,
+    itemHeight,
+    containerHeight,
+    overscan,
+  });
 }
 
 export default useVirtualList;

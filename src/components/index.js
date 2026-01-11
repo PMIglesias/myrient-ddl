@@ -1,6 +1,6 @@
 /**
  * Índice de Componentes
- * 
+ *
  * Exporta todos los componentes para uso centralizado
  */
 
@@ -18,6 +18,7 @@ export { default as ConfirmationToasts } from './downloads/ConfirmationToasts.vu
 
 // Notifications
 export { default as ToastNotifications } from './ToastNotifications.vue';
+export { default as ErrorBoundary } from './ErrorBoundary.vue';
 
 // Modals
 export { default as SettingsModal } from './modals/SettingsModal.vue';

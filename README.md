@@ -29,7 +29,7 @@ Myrient DDL es una aplicación Electron + Vue 3 que permite explorar el catálog
 
 ### Requisitos Previos
 
-- Node.js 18+ 
+- Node.js 18+
 - npm 9+
 - 7-Zip (para extraer la base de datos)
 - Windows 10/11
@@ -37,12 +37,14 @@ Myrient DDL es una aplicación Electron + Vue 3 que permite explorar el catálog
 ### Instalación
 
 1. **Clonar el repositorio**
+
 ```bash
 git clone https://github.com/tu-usuario/myrient-ddl.git
 cd myrient-ddl
 ```
 
 2. **Instalar dependencias**
+
 ```bash
 npm install
 ```
@@ -52,6 +54,7 @@ npm install
 ⚠️ **IMPORTANTE**: La base de datos `myrient.db` (1.9 GB) no está incluida en el repositorio.
 
 **Opción A: Descargar desde el servidor**
+
 ```powershell
 # Descarga myrient.7z desde el servidor
 Invoke-WebRequest -Uri "URL_DEL_ARCHIVO" -OutFile "resources/myrient.7z"
@@ -61,9 +64,11 @@ Invoke-WebRequest -Uri "URL_DEL_ARCHIVO" -OutFile "resources/myrient.7z"
 ```
 
 **Opción B: Usar base de datos existente**
+
 - Si ya tienes `myrient.db`, cópialo a la carpeta `resources/`
 
 4. **Ejecutar en modo desarrollo**
+
 ```bash
 npm run dev
 ```
@@ -106,6 +111,7 @@ myrient-ddl/
 ## 📝 Características Implementadas
 
 ### Gestión de Descargas
+
 - ✅ Cola de descargas con límite configurable
 - ✅ Velocidad en MB/s y tiempo restante
 - ✅ Detener/reiniciar descargas
@@ -115,6 +121,7 @@ myrient-ddl/
 - ✅ Limpieza de lista (detiene descargas activas)
 
 ### Exploración
+
 - ✅ Navegación por carpetas
 - ✅ Búsqueda con múltiples filtros
 - ✅ Sistema de favoritos

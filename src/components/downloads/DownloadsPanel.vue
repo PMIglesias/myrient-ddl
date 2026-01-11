@@ -1,37 +1,44 @@
 <template>
-  <div v-if="downloads.length > 0" id="downloads-section">
+  <div
+    v-if="downloads.length > 0"
+    id="downloads-section"
+  >
     <div class="downloads-header">
       <h2>Lista de Descargas</h2>
       <div class="header-actions">
-        <button 
+        <button
           v-if="hasActiveOrQueuedDownloads"
-          @click="$emit('pause-all')" 
-          class="btn-header btn-pause-all" 
+          class="btn-header btn-pause-all"
           title="Pausar toda la cola"
+          aria-label="Pausar todas las descargas activas"
+          @click="$emit('pause-all')"
         >
           ⏸ Pausar Todo
         </button>
-        <button 
+        <button
           v-if="hasPausedOrCancelledDownloads"
-          @click="$emit('resume-all')" 
-          class="btn-header btn-resume-all" 
+          class="btn-header btn-resume-all"
           title="Reanudar toda la cola"
+          aria-label="Reanudar todas las descargas pausadas"
+          @click="$emit('resume-all')"
         >
           ▶ Reanudar Todo
         </button>
-        <button 
+        <button
           v-if="hasOnlyActiveOrQueuedDownloads"
-          @click="$emit('cancel-all-downloads')" 
-          class="btn-header btn-cancel-all" 
+          class="btn-header btn-cancel-all"
           title="Detener y eliminar todas las descargas activas"
+          aria-label="Cancelar y eliminar todas las descargas activas"
+          @click="$emit('cancel-all-downloads')"
         >
           ⏹ Eliminar Todo
         </button>
-        <button 
+        <button
           v-else-if="hasAnyDownloads"
-          @click="$emit('clear-downloads')" 
-          class="btn-clear-downloads" 
+          class="btn-clear-downloads"
           title="Limpiar descargas completadas y detenidas"
+          aria-label="Limpiar descargas completadas y detenidas de la lista"
+          @click="$emit('clear-downloads')"
         >
           🗑️ Limpiar Lista
         </button>
@@ -39,29 +46,56 @@
     </div>
 
     <!-- Acciones masivas para confirmaciones -->
-    <div v-if="selectedDownloads.size > 0" class="bulk-actions">
+    <div
+      v-if="selectedDownloads.size > 0"
+      class="bulk-actions"
+    >
       <span class="bulk-info">{{ selectedDownloads.size }} seleccionada(s)</span>
-      <button @click="$emit('confirm-all')" class="btn-bulk btn-bulk-yes">✓ Aceptar seleccionadas</button>
-      <button @click="$emit('cancel-all')" class="btn-bulk btn-bulk-no">✗ Cancelar seleccionadas</button>
+      <button
+        class="btn-bulk btn-bulk-yes"
+        aria-label="Aceptar sobrescritura para todas las descargas seleccionadas"
+        @click="$emit('confirm-all')"
+      >
+        ✓ Aceptar seleccionadas
+      </button>
+      <button
+        class="btn-bulk btn-bulk-no"
+        aria-label="Cancelar sobrescritura para todas las descargas seleccionadas"
+        @click="$emit('cancel-all')"
+      >
+        ✗ Cancelar seleccionadas
+      </button>
     </div>
 
-    <div 
-      class="downloads-table-container" 
+    <div
       ref="downloadsContainer"
+      class="downloads-table-container"
+      role="region"
+      aria-label="Lista de descargas"
+      :style="{
+        height: shouldVirtualize ? '600px' : 'auto',
+        overflow: shouldVirtualize ? 'auto' : 'visible',
+      }"
       @scroll="handleScroll"
-      :style="{ height: shouldVirtualize ? '600px' : 'auto', overflow: shouldVirtualize ? 'auto' : 'visible' }"
     >
-      <table class="downloads-table">
+      <table
+        class="downloads-table"
+        role="table"
+        aria-label="Tabla de descargas"
+      >
         <thead>
           <tr>
             <th class="checkbox-col">
-              <input 
-                type="checkbox" 
-                :checked="selectedHistoryDownloads.size === downloads.length && downloads.length > 0"
-                @change="$emit('toggle-select-all-history', $event)"
+              <input
+                type="checkbox"
+                :checked="
+                  selectedHistoryDownloads.size === downloads.length && downloads.length > 0
+                "
                 class="checkbox-input"
                 title="Seleccionar todo"
-              />
+                aria-label="Seleccionar todas las descargas"
+                @change="$emit('toggle-select-all-history', $event)"
+              >
             </th>
             <th>Nombre del Archivo</th>
             <th>Proceso</th>
@@ -69,199 +103,384 @@
             <th>Velocidad</th>
             <th>Tiempo Estimado</th>
             <th>Ubicación</th>
-            <th v-if="pendingConfirmations.length > 0">Observación</th>
+            <th v-if="pendingConfirmations.length > 0">
+              Observación
+            </th>
             <th>Acciones</th>
           </tr>
         </thead>
         <tbody :style="{ height: shouldVirtualize ? totalHeight : 'auto' }">
           <!-- Espaciador superior para filas no visibles -->
-          <tr v-if="shouldVirtualize && visibleRange.start > 0" style="height: 0;">
-            <td :colspan="columnCount" :style="{ height: topSpacerHeight + 'px', padding: 0, border: 'none' }"></td>
+          <tr
+            v-if="shouldVirtualize && visibleRange.start > 0"
+            style="height: 0"
+          >
+            <td
+              :colspan="columnCount"
+              :style="{ height: topSpacerHeight + 'px', padding: 0, border: 'none' }"
+            />
           </tr>
-          
+
           <!-- Filas visibles -->
-          <tr 
-            v-for="download in visibleItems" 
+          <tr
+            v-for="download in visibleItems"
             :key="download.id"
             :data-virtual-index="download._virtualIndex"
             :class="'download-row-' + download.queueStatus"
+            role="row"
+            tabindex="0"
           >
-          <td class="checkbox-col" data-label="">
-            <input 
-              type="checkbox" 
-              :checked="selectedHistoryDownloads.has(download.id)"
-              @change="$emit('toggle-select-history', download.id)"
-              class="checkbox-input"
+            <td
+              class="checkbox-col"
+              data-label=""
+            >
+              <input
+                type="checkbox"
+                :checked="selectedHistoryDownloads.has(download.id)"
+                class="checkbox-input"
+                :aria-label="`Seleccionar descarga ${download.title}`"
+                @change="$emit('toggle-select-history', download.id)"
+              >
+            </td>
+            <td
+              class="download-name"
+              data-label="Nombre"
+              :title="download.title"
+            >
+              {{ download.title }}
+            </td>
+            <td
+              class="download-process"
+              data-label="Proceso"
+            >
+              <div class="process-content">
+                <!-- Progreso general -->
+                <div
+                  v-if="
+                    download.queueStatus === 'downloading' ||
+                      download.state === 'progressing' ||
+                      download.state === 'merging'
+                  "
+                  class="progress-container"
+                >
+                  <progress
+                    :value="download.percent || 0"
+                    max="1"
+                  />
+                  <span class="progress-text">{{ getPercentage(download) }}%</span>
+                </div>
+                <div
+                  v-else-if="download.queueStatus === 'paused'"
+                  class="progress-container"
+                >
+                  <progress
+                    :value="download.percent || 0"
+                    max="1"
+                  />
+                  <span class="progress-text">{{ getPercentage(download) }}%</span>
+                </div>
+                <span v-else-if="download.queueStatus === 'queued'">-</span>
+                <span v-else-if="download.queueStatus === 'completed'">100%</span>
+                <span v-else-if="download.queueStatus === 'error'">-</span>
+
+                <!-- Indicador de progreso granular para chunks (solo si está habilitado) -->
+                <ChunkProgressIndicator
+                  v-if="shouldShowChunkProgress(download)"
+                  :chunked="download.chunked || false"
+                  :chunk-progress="
+                    download.chunkProgress && Array.isArray(download.chunkProgress)
+                      ? download.chunkProgress
+                      : []
+                  "
+                  :active-chunks="download.activeChunks || 0"
+                  :completed-chunks="download.completedChunks || 0"
+                  :total-chunks="download.totalChunks || 0"
+                  :merge-progress="
+                    download.mergeProgress !== undefined
+                      ? download.mergeProgress
+                      : download.merging
+                        ? download.percent
+                        : undefined
+                  "
+                  :merge-speed="download.mergeSpeed"
+                  :current-chunk="download.currentChunk"
+                  :bytes-processed="download.bytesProcessed"
+                />
+              </div>
+            </td>
+            <td
+              class="download-status"
+              data-label="Estado"
+            >
+              <span
+                v-if="download.state === 'waiting'"
+                class="status-badge status-waiting"
+              >
+                ⏸️ Esperando confirmación
+              </span>
+              <span
+                v-else-if="download.state === 'paused'"
+                class="status-badge status-paused"
+              >
+                ⏸ Pausada
+              </span>
+              <span
+                v-else-if="download.state === 'cancelled'"
+                class="status-badge status-cancelled"
+              >
+                ⏹ Detenida
+              </span>
+              <span
+                v-else-if="download.queueStatus === 'queued'"
+                class="status-badge status-queued"
+              >
+                ⏳ En cola
+              </span>
+              <span
+                v-else-if="
+                  download.queueStatus === 'downloading' || download.state === 'progressing'
+                "
+                class="status-badge status-downloading"
+              >
+                ⬇️ Descargando
+              </span>
+              <span
+                v-else-if="download.state === 'merging' || download.merging"
+                class="status-badge status-merging"
+              >
+                🔄 Fusionando
+              </span>
+              <span
+                v-else-if="download.queueStatus === 'completed'"
+                class="status-badge status-completed"
+              >
+                ✅ Completado
+              </span>
+              <span
+                v-else-if="download.queueStatus === 'error'"
+                class="status-badge status-error"
+                :title="download.error"
+              >
+                ❌ Error: {{ download.error }}
+              </span>
+            </td>
+            <td
+              class="download-speed"
+              data-label="Velocidad"
+            >
+              <span
+                v-if="speedStats.has(download.id)"
+                class="speed-badge"
+              >
+                {{ speedStats.get(download.id).speed.toFixed(2) }} MB/s
+              </span>
+              <span v-else>-</span>
+            </td>
+            <td
+              class="download-date"
+              data-label="Tiempo Estimado"
+            >
+              {{ getEstimatedTime(download) }}
+            </td>
+            <td
+              class="download-path"
+              data-label="Ubicación"
+              :title="download.savePath"
+            >
+              {{ getDirectoryPath(download.savePath) }}
+            </td>
+            <td
+              v-if="pendingConfirmations.length > 0"
+              class="download-observation"
+              data-label="Observación"
+            >
+              <span
+                v-if="download.state === 'waiting'"
+                class="observation-text"
+              >
+                Archivo ya existe
+              </span>
+              <span v-else>-</span>
+            </td>
+            <td
+              class="download-actions"
+              data-label="Acciones"
+            >
+              <!-- Botones según estado -->
+              <div class="action-buttons-row">
+                <!-- Esperando confirmación de sobrescritura -->
+                <template v-if="download.state === 'waiting'">
+                  <button
+                    class="btn-action btn-confirm"
+                    title="Sobrescribir archivo"
+                    :aria-label="`Sobrescribir archivo ${download.title}`"
+                    @click="$emit('confirm-overwrite', download.id)"
+                  >
+                    <span class="btn-icon">✓</span>
+                  </button>
+                  <button
+                    class="btn-action btn-cancel"
+                    title="Cancelar descarga"
+                    :aria-label="`Cancelar descarga ${download.title}`"
+                    @click="$emit('cancel-overwrite', download.id)"
+                  >
+                    <span class="btn-icon">✗</span>
+                  </button>
+                  <button
+                    class="btn-action btn-delete"
+                    title="Eliminar de la lista"
+                    :aria-label="`Eliminar descarga ${download.title} de la lista`"
+                    @click="$emit('remove', download.id)"
+                  >
+                    <span class="btn-icon">🗑️</span>
+                  </button>
+                </template>
+
+                <!-- Descargando activamente -->
+                <template v-else-if="download.queueStatus === 'downloading'">
+                  <button
+                    class="btn-action btn-pause"
+                    title="Pausar descarga"
+                    :aria-label="`Pausar descarga ${download.title}`"
+                    @click="$emit('pause', download.id)"
+                  >
+                    <span class="btn-icon">⏸</span>
+                  </button>
+                  <button
+                    class="btn-action btn-cancel"
+                    title="Detener y cancelar descarga"
+                    :aria-label="`Detener y cancelar descarga ${download.title}`"
+                    @click="$emit('cancel', download.id)"
+                  >
+                    <span class="btn-icon">⏹</span>
+                  </button>
+                </template>
+
+                <!-- Pausada - mostrar opción de reanudar -->
+                <template v-else-if="download.queueStatus === 'paused'">
+                  <button
+                    class="btn-action btn-resume"
+                    title="Reanudar descarga"
+                    :aria-label="`Reanudar descarga ${download.title}`"
+                    @click="$emit('resume', download.id)"
+                  >
+                    <span class="btn-icon">▶</span>
+                  </button>
+                  <button
+                    class="btn-action btn-cancel"
+                    title="Cancelar descarga"
+                    :aria-label="`Cancelar descarga ${download.title}`"
+                    @click="$emit('cancel', download.id)"
+                  >
+                    <span class="btn-icon">⏹</span>
+                  </button>
+                </template>
+
+                <!-- En cola - permitir reiniciar o cancelar -->
+                <template v-else-if="download.queueStatus === 'queued'">
+                  <button
+                    class="btn-action btn-resume"
+                    title="Reiniciar descarga"
+                    :aria-label="`Reiniciar descarga ${download.title}`"
+                    @click="$emit('retry', download.id)"
+                  >
+                    <span class="btn-icon">🔄</span>
+                  </button>
+                  <button
+                    class="btn-action btn-cancel"
+                    title="Cancelar descarga"
+                    :aria-label="`Cancelar descarga ${download.title}`"
+                    @click="$emit('cancel', download.id)"
+                  >
+                    <span class="btn-icon">⏹</span>
+                  </button>
+                </template>
+
+                <!-- Cancelada/Detenida - opciones de reiniciar o eliminar -->
+                <template
+                  v-else-if="download.state === 'cancelled' || download.queueStatus === 'cancelled'"
+                >
+                  <button
+                    class="btn-action btn-resume"
+                    title="Reiniciar descarga"
+                    :aria-label="`Reiniciar descarga ${download.title}`"
+                    @click="$emit('retry', download.id)"
+                  >
+                    <span class="btn-icon">🔄</span>
+                  </button>
+                  <button
+                    class="btn-action btn-delete"
+                    title="Eliminar de la lista"
+                    :aria-label="`Eliminar descarga ${download.title} de la lista`"
+                    @click="$emit('remove', download.id)"
+                  >
+                    <span class="btn-icon">🗑️</span>
+                  </button>
+                </template>
+
+                <!-- Error/Interrumpida - opciones de reintentar o eliminar -->
+                <template v-else-if="download.queueStatus === 'error'">
+                  <button
+                    class="btn-action btn-resume"
+                    title="Reintentar descarga"
+                    :aria-label="`Reintentar descarga ${download.title}`"
+                    @click="$emit('retry', download.id)"
+                  >
+                    <span class="btn-icon">🔄</span>
+                  </button>
+                  <button
+                    class="btn-action btn-delete"
+                    title="Eliminar de la lista"
+                    :aria-label="`Eliminar descarga ${download.title} de la lista`"
+                    @click="$emit('remove', download.id)"
+                  >
+                    <span class="btn-icon">🗑️</span>
+                  </button>
+                </template>
+
+                <!-- Completada - solo opción de eliminar -->
+                <template v-else-if="download.queueStatus === 'completed'">
+                  <button
+                    class="btn-action btn-delete"
+                    title="Eliminar de la lista"
+                    :aria-label="`Eliminar descarga ${download.title} de la lista`"
+                    @click="$emit('remove', download.id)"
+                  >
+                    <span class="btn-icon">🗑️</span>
+                  </button>
+                </template>
+
+                <!-- Sin acciones disponibles -->
+                <template v-else>
+                  <span class="no-actions">-</span>
+                </template>
+              </div>
+            </td>
+          </tr>
+
+          <!-- Espaciador inferior para filas no visibles -->
+          <tr
+            v-if="shouldVirtualize && visibleRange.end < downloads.length"
+            style="height: 0"
+          >
+            <td
+              :colspan="columnCount"
+              :style="{ height: bottomSpacerHeight + 'px', padding: 0, border: 'none' }"
             />
-          </td>
-          <td class="download-name" data-label="Nombre" :title="download.title">{{ download.title }}</td>
-          <td class="download-process" data-label="Proceso">
-            <div class="process-content">
-              <!-- Progreso general -->
-              <div v-if="download.queueStatus === 'downloading' || download.state === 'progressing' || download.state === 'merging'" class="progress-container">
-                <progress :value="download.percent || 0" max="1"></progress>
-                <span class="progress-text">{{ getPercentage(download) }}%</span>
-              </div>
-              <div v-else-if="download.queueStatus === 'paused'" class="progress-container">
-                <progress :value="download.percent || 0" max="1"></progress>
-                <span class="progress-text">{{ getPercentage(download) }}%</span>
-              </div>
-              <span v-else-if="download.queueStatus === 'queued'">-</span>
-              <span v-else-if="download.queueStatus === 'completed'">100%</span>
-              <span v-else-if="download.queueStatus === 'error'">-</span>
-              
-              <!-- Indicador de progreso granular para chunks (solo si está habilitado) -->
-              <ChunkProgressIndicator
-                v-if="shouldShowChunkProgress(download)"
-                :chunked="download.chunked || false"
-                :chunk-progress="download.chunkProgress && Array.isArray(download.chunkProgress) ? download.chunkProgress : []"
-                :active-chunks="download.activeChunks || 0"
-                :completed-chunks="download.completedChunks || 0"
-                :total-chunks="download.totalChunks || 0"
-                :merge-progress="download.mergeProgress !== undefined ? download.mergeProgress : (download.merging ? download.percent : undefined)"
-                :merge-speed="download.mergeSpeed"
-                :current-chunk="download.currentChunk"
-                :bytes-processed="download.bytesProcessed"
-              />
-            </div>
-          </td>
-          <td class="download-status" data-label="Estado">
-            <span v-if="download.state === 'waiting'" class="status-badge status-waiting">
-              ⏸️ Esperando confirmación
-            </span>
-            <span v-else-if="download.state === 'paused'" class="status-badge status-paused">
-              ⏸ Pausada
-            </span>
-            <span v-else-if="download.state === 'cancelled'" class="status-badge status-cancelled">
-              ⏹ Detenida
-            </span>
-            <span v-else-if="download.queueStatus === 'queued'" class="status-badge status-queued">
-              ⏳ En cola
-            </span>
-            <span v-else-if="download.queueStatus === 'downloading' || download.state === 'progressing'" class="status-badge status-downloading">
-              ⬇️ Descargando
-            </span>
-            <span v-else-if="download.state === 'merging' || download.merging" class="status-badge status-merging">
-              🔄 Fusionando
-            </span>
-            <span v-else-if="download.queueStatus === 'completed'" class="status-badge status-completed">
-              ✅ Completado
-            </span>
-            <span v-else-if="download.queueStatus === 'error'" class="status-badge status-error" :title="download.error">
-              ❌ Error: {{ download.error }}
-            </span>
-          </td>
-          <td class="download-speed" data-label="Velocidad">
-            <span v-if="speedStats.has(download.id)" class="speed-badge">
-              {{ speedStats.get(download.id).speed.toFixed(2) }} MB/s
-            </span>
-            <span v-else>-</span>
-          </td>
-          <td class="download-date" data-label="Tiempo Estimado">
-            {{ getEstimatedTime(download) }}
-          </td>
-          <td class="download-path" data-label="Ubicación" :title="download.savePath">
-            {{ getDirectoryPath(download.savePath) }}
-          </td>
-          <td v-if="pendingConfirmations.length > 0" class="download-observation" data-label="Observación">
-            <span v-if="download.state === 'waiting'" class="observation-text">
-              Archivo ya existe
-            </span>
-            <span v-else>-</span>
-          </td>
-          <td class="download-actions" data-label="Acciones">
-            <!-- Botones según estado -->
-            <div class="action-buttons-row">
-              <!-- Esperando confirmación de sobrescritura -->
-              <template v-if="download.state === 'waiting'">
-                <button @click="$emit('confirm-overwrite', download.id)" class="btn-action btn-confirm" title="Sobrescribir archivo">
-                  <span class="btn-icon">✓</span>
-                </button>
-                <button @click="$emit('cancel-overwrite', download.id)" class="btn-action btn-cancel" title="Cancelar descarga">
-                  <span class="btn-icon">✗</span>
-                </button>
-                <button @click="$emit('remove', download.id)" class="btn-action btn-delete" title="Eliminar de la lista">
-                  <span class="btn-icon">🗑️</span>
-                </button>
-              </template>
-              
-              <!-- Descargando activamente -->
-              <template v-else-if="download.queueStatus === 'downloading'">
-                <button @click="$emit('pause', download.id)" class="btn-action btn-pause" title="Pausar descarga">
-                  <span class="btn-icon">⏸</span>
-                </button>
-                <button @click="$emit('cancel', download.id)" class="btn-action btn-cancel" title="Detener y cancelar descarga">
-                  <span class="btn-icon">⏹</span>
-                </button>
-              </template>
-              
-              <!-- Pausada - mostrar opción de reanudar -->
-              <template v-else-if="download.queueStatus === 'paused'">
-                <button @click="$emit('resume', download.id)" class="btn-action btn-resume" title="Reanudar descarga">
-                  <span class="btn-icon">▶</span>
-                </button>
-                <button @click="$emit('cancel', download.id)" class="btn-action btn-cancel" title="Cancelar descarga">
-                  <span class="btn-icon">⏹</span>
-                </button>
-              </template>
-              
-              <!-- En cola - permitir reiniciar o cancelar -->
-              <template v-else-if="download.queueStatus === 'queued'">
-                <button @click="$emit('retry', download.id)" class="btn-action btn-resume" title="Reiniciar descarga">
-                  <span class="btn-icon">🔄</span>
-                </button>
-                <button @click="$emit('cancel', download.id)" class="btn-action btn-cancel" title="Cancelar descarga">
-                  <span class="btn-icon">⏹</span>
-                </button>
-              </template>
-              
-              <!-- Cancelada/Detenida - opciones de reiniciar o eliminar -->
-              <template v-else-if="download.state === 'cancelled' || download.queueStatus === 'cancelled'">
-                <button @click="$emit('retry', download.id)" class="btn-action btn-resume" title="Reiniciar descarga">
-                  <span class="btn-icon">🔄</span>
-                </button>
-                <button @click="$emit('remove', download.id)" class="btn-action btn-delete" title="Eliminar de la lista">
-                  <span class="btn-icon">🗑️</span>
-                </button>
-              </template>
-              
-              <!-- Error/Interrumpida - opciones de reintentar o eliminar -->
-              <template v-else-if="download.queueStatus === 'error'">
-                <button @click="$emit('retry', download.id)" class="btn-action btn-resume" title="Reintentar descarga">
-                  <span class="btn-icon">🔄</span>
-                </button>
-                <button @click="$emit('remove', download.id)" class="btn-action btn-delete" title="Eliminar de la lista">
-                  <span class="btn-icon">🗑️</span>
-                </button>
-              </template>
-              
-              <!-- Completada - solo opción de eliminar -->
-              <template v-else-if="download.queueStatus === 'completed'">
-                <button @click="$emit('remove', download.id)" class="btn-action btn-delete" title="Eliminar de la lista">
-                  <span class="btn-icon">🗑️</span>
-                </button>
-              </template>
-              
-              <!-- Sin acciones disponibles -->
-              <template v-else>
-                <span class="no-actions">-</span>
-              </template>
-            </div>
-          </td>
-        </tr>
-        
-        <!-- Espaciador inferior para filas no visibles -->
-        <tr v-if="shouldVirtualize && visibleRange.end < downloads.length" style="height: 0;">
-          <td :colspan="columnCount" :style="{ height: bottomSpacerHeight + 'px', padding: 0, border: 'none' }"></td>
-        </tr>
-      </tbody>
-    </table>
+          </tr>
+        </tbody>
+      </table>
     </div>
   </div>
 
   <!-- Estado vacío -->
-  <div v-else-if="showEmpty" class="empty-state">
-    <div class="empty-state-icon">⬇️</div>
+  <div
+    v-else-if="showEmpty"
+    class="empty-state"
+  >
+    <div class="empty-state-icon">
+      ⬇️
+    </div>
     <h3>No hay descargas</h3>
     <p>Selecciona archivos de la lista para comenzar a descargar. Las descargas aparecerán aquí.</p>
   </div>
@@ -276,32 +495,32 @@ import ChunkProgressIndicator from './ChunkProgressIndicator.vue';
 const props = defineProps({
   downloads: {
     type: Array,
-    required: true
+    required: true,
   },
   speedStats: {
     type: Map,
-    default: () => new Map()
+    default: () => new Map(),
   },
   pendingConfirmations: {
     type: Array,
-    default: () => []
+    default: () => [],
   },
   selectedDownloads: {
     type: Set,
-    default: () => new Set()
+    default: () => new Set(),
   },
   selectedHistoryDownloads: {
     type: Set,
-    default: () => new Set()
+    default: () => new Set(),
   },
   showEmpty: {
     type: Boolean,
-    default: false
+    default: false,
   },
   showChunkProgress: {
     type: Boolean,
-    default: true
-  }
+    default: true,
+  },
 });
 
 // Emits
@@ -320,7 +539,7 @@ defineEmits([
   'resume',
   'cancel',
   'retry',
-  'remove' // Nuevo emit para eliminar
+  'remove', // Nuevo emit para eliminar
 ]);
 
 // Referencias
@@ -343,14 +562,14 @@ const {
   topSpacerHeight,
   bottomSpacerHeight,
   totalHeight,
-  handleScroll
+  handleScroll,
 } = useVirtualScroll({
   items: computed(() => props.downloads),
   containerRef: downloadsContainer,
   itemHeight: 60, // Altura estimada por fila (más alta que FileTable)
   overscan: 5,
   minItemsToVirtualize: 30, // Virtualizar con menos items que archivos
-  enabled: true
+  enabled: true,
 });
 
 // Computed properties para controlar visibilidad de botones
@@ -359,99 +578,107 @@ const hasAnyDownloads = computed(() => {
 });
 
 const hasActiveOrQueuedDownloads = computed(() => {
-  return props.downloads.some(d => 
-    d.queueStatus === 'downloading' || 
-    d.queueStatus === 'queued' ||
-    d.state === 'progressing' ||
-    d.state === 'starting' ||
-    d.state === 'queued'
+  return props.downloads.some(
+    d =>
+      d.queueStatus === 'downloading' ||
+      d.queueStatus === 'queued' ||
+      d.state === 'progressing' ||
+      d.state === 'starting' ||
+      d.state === 'queued'
   );
 });
 
 const hasPausedOrCancelledDownloads = computed(() => {
-  return props.downloads.some(d => 
-    d.state === 'paused' ||
-    d.state === 'cancelled' ||
-    d.queueStatus === 'paused' ||
-    d.queueStatus === 'cancelled'
+  return props.downloads.some(
+    d =>
+      d.state === 'paused' ||
+      d.state === 'cancelled' ||
+      d.queueStatus === 'paused' ||
+      d.queueStatus === 'cancelled'
   );
 });
 
 const hasOnlyActiveOrQueuedDownloads = computed(() => {
   // Verificar si solo hay descargas activas o en cola (sin completadas/detenidas)
-  const hasActiveOrQueued = props.downloads.some(d => 
-    d.queueStatus === 'downloading' || 
-    d.queueStatus === 'queued' ||
-    d.state === 'progressing' ||
-    d.state === 'starting' ||
-    d.state === 'queued'
+  const hasActiveOrQueued = props.downloads.some(
+    d =>
+      d.queueStatus === 'downloading' ||
+      d.queueStatus === 'queued' ||
+      d.state === 'progressing' ||
+      d.state === 'starting' ||
+      d.state === 'queued'
   );
-  
-  const hasCompletedOrStopped = props.downloads.some(d => 
-    d.queueStatus === 'completed' ||
-    d.queueStatus === 'error' ||
-    d.queueStatus === 'cancelled' ||
-    d.state === 'completed' ||
-    d.state === 'interrupted' ||
-    d.state === 'cancelled'
+
+  const hasCompletedOrStopped = props.downloads.some(
+    d =>
+      d.queueStatus === 'completed' ||
+      d.queueStatus === 'error' ||
+      d.queueStatus === 'cancelled' ||
+      d.state === 'completed' ||
+      d.state === 'interrupted' ||
+      d.state === 'cancelled'
   );
-  
+
   // Solo mostrar "Eliminar Todo" si hay activas/en cola Y no hay completadas/detenidas
   return hasActiveOrQueued && !hasCompletedOrStopped;
 });
 
 // Métodos
-const getPercentage = (download) => {
+const getPercentage = download => {
   return Math.round((download.percent || 0) * 100);
 };
 
 // Verificar si se debe mostrar el indicador de chunks
-const shouldShowChunkProgress = (download) => {
+const shouldShowChunkProgress = download => {
   // Verificar que showChunkProgress esté habilitado
   if (!props.showChunkProgress) {
     return false;
   }
-  
+
   // Mostrar si está fusionando (mergeProgress está definido o merging es true)
   if (download.merging || download.mergeProgress !== undefined) {
     return true;
   }
-  
+
   // Mostrar si hay totalChunks > 0 (indica que es una descarga chunked)
   if (download.totalChunks && download.totalChunks > 0) {
     return true;
   }
-  
+
   // Mostrar si hay chunkProgress con datos
-  if (download.chunkProgress && Array.isArray(download.chunkProgress) && download.chunkProgress.length > 0) {
+  if (
+    download.chunkProgress &&
+    Array.isArray(download.chunkProgress) &&
+    download.chunkProgress.length > 0
+  ) {
     return true;
   }
-  
+
   // Mostrar si chunked está explícitamente en true
   if (download.chunked) {
     return true;
   }
-  
+
   return false;
 };
 
-const formatDate = (timestamp) => {
+const formatDate = timestamp => {
   if (!timestamp) return '-';
   return new Date(timestamp).toLocaleString();
 };
 
-const getDirectoryPath = (fullPath) => {
+const getDirectoryPath = fullPath => {
   if (!fullPath) return '-';
   const lastSep = Math.max(fullPath.lastIndexOf('\\'), fullPath.lastIndexOf('/'));
   return lastSep > 0 ? fullPath.substring(0, lastSep) : fullPath;
 };
 
 // Obtener estimación de tiempo para una descarga
-const getEstimatedTime = (download) => {
+const getEstimatedTime = download => {
   // Para descargas en cola: mostrar tiempo hasta que comience
   if (download.queueStatus === 'queued' || download.state === 'queued') {
     const estimate = timeEstimates.value.get(download.id);
-    
+
     if (!estimate) {
       return 'Calculando...';
     }
@@ -467,26 +694,31 @@ const getEstimatedTime = (download) => {
     }
 
     // Formatear tiempo hasta inicio
-    return formatEstimatedTime(estimate.estimatedSeconds, estimate.estimatedMinutes, estimate.estimatedHours);
+    return formatEstimatedTime(
+      estimate.estimatedSeconds,
+      estimate.estimatedMinutes,
+      estimate.estimatedHours
+    );
   }
-  
+
   // Para descargas activas (descargando o fusionando): mostrar tiempo restante de finalización
-  if (download.queueStatus === 'downloading' || 
-      download.state === 'progressing' || 
-      download.state === 'merging' || 
-      download.merging) {
-    
+  if (
+    download.queueStatus === 'downloading' ||
+    download.state === 'progressing' ||
+    download.state === 'merging' ||
+    download.merging
+  ) {
     // remainingTime viene del backend en segundos
     const remainingSeconds = download.remainingTime;
-    
+
     if (!remainingSeconds || remainingSeconds <= 0 || !isFinite(remainingSeconds)) {
       return 'Calculando...';
     }
-    
+
     // Formatear tiempo restante
     return formatRemainingTime(remainingSeconds);
   }
-  
+
   // Para otras descargas (pausadas, completadas, error, etc.)
   return '-';
 };
@@ -510,19 +742,19 @@ const formatEstimatedTime = (seconds, minutes, hours) => {
   } else if (seconds && seconds > 0) {
     return `~${Math.floor(seconds)}s`;
   }
-  
+
   return '-';
 };
 
 // Formatear tiempo restante de finalización (para descargas activas)
-const formatRemainingTime = (seconds) => {
+const formatRemainingTime = seconds => {
   if (!seconds || seconds <= 0 || !isFinite(seconds)) {
     return '-';
   }
-  
+
   const hours = seconds / 3600;
   const minutes = seconds / 60;
-  
+
   if (hours >= 1) {
     const h = Math.floor(hours);
     const m = Math.floor((seconds % 3600) / 60);
@@ -546,8 +778,8 @@ const formatRemainingTime = (seconds) => {
 const updateTimeEstimates = async () => {
   try {
     // Obtener todas las descargas en cola
-    const queuedDownloads = props.downloads.filter(d => 
-      d.queueStatus === 'queued' || d.state === 'queued'
+    const queuedDownloads = props.downloads.filter(
+      d => d.queueStatus === 'queued' || d.state === 'queued'
     );
 
     if (queuedDownloads.length === 0) {
@@ -559,7 +791,7 @@ const updateTimeEstimates = async () => {
     for (const download of queuedDownloads) {
       try {
         const result = await window.api.getQueueTimeEstimate(download.id);
-        
+
         if (result.success && result.timeUntilStart) {
           timeEstimates.value.set(download.id, result.timeUntilStart);
         } else {
@@ -570,18 +802,19 @@ const updateTimeEstimates = async () => {
             // Esto es una aproximación, pero mejor que nada
             const position = queuedDownloads.findIndex(d => d.id === download.id) + 1;
             const totalEstimate = totalResult.queueTimeEstimate;
-            
+
             if (totalEstimate.totalEstimatedSeconds !== null) {
               // Estimar tiempo basado en posición en cola
-              const avgTimePerDownload = totalEstimate.totalEstimatedSeconds / queuedDownloads.length;
+              const avgTimePerDownload =
+                totalEstimate.totalEstimatedSeconds / queuedDownloads.length;
               const estimatedSeconds = avgTimePerDownload * position;
-              
+
               timeEstimates.value.set(download.id, {
                 estimatedSeconds,
                 estimatedMinutes: estimatedSeconds / 60,
                 estimatedHours: estimatedSeconds / 3600,
                 canStartImmediately: false,
-                positionInQueue: position
+                positionInQueue: position,
               });
             }
           }
@@ -596,16 +829,19 @@ const updateTimeEstimates = async () => {
 };
 
 // Watcher para actualizar estimaciones cuando cambian las descargas en cola
-watch(() => props.downloads.filter(d => d.queueStatus === 'queued' || d.state === 'queued'), 
+watch(
+  () => props.downloads.filter(d => d.queueStatus === 'queued' || d.state === 'queued'),
   (newQueued, oldQueued) => {
     // Si hay cambios en las descargas en cola, actualizar estimaciones
     const newIds = new Set(newQueued.map(d => d.id));
     const oldIds = new Set((oldQueued || []).map(d => d.id));
-    
+
     // Si hay nuevas descargas o se eliminaron, actualizar
-    if (newIds.size !== oldIds.size || 
-        [...newIds].some(id => !oldIds.has(id)) ||
-        [...oldIds].some(id => !newIds.has(id))) {
+    if (
+      newIds.size !== oldIds.size ||
+      [...newIds].some(id => !oldIds.has(id)) ||
+      [...oldIds].some(id => !newIds.has(id))
+    ) {
       updateTimeEstimates();
     }
   },
@@ -616,7 +852,7 @@ watch(() => props.downloads.filter(d => d.queueStatus === 'queued' || d.state ==
 onMounted(() => {
   // Actualizar inmediatamente
   updateTimeEstimates();
-  
+
   // Actualizar cada 5 segundos
   updateTimer = setInterval(() => {
     updateTimeEstimates();
@@ -668,7 +904,9 @@ onUnmounted(() => {
 .btn-header:focus {
   outline: 2px solid currentColor;
   outline-offset: 2px;
-  box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.2), 0 2px 8px rgba(0, 0, 0, 0.3);
+  box-shadow:
+    0 0 0 3px rgba(0, 0, 0, 0.2),
+    0 2px 8px rgba(0, 0, 0, 0.3);
 }
 
 .btn-header:active {
@@ -941,7 +1179,7 @@ onUnmounted(() => {
   .btn-text {
     display: none;
   }
-  
+
   .btn-action {
     min-width: 36px;
     padding: 6px;

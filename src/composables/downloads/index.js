@@ -1,6 +1,6 @@
 /**
  * Índice de Composables de Descargas
- * 
+ *
  * Re-exporta todos los composables de descargas para uso centralizado
  */
 
@@ -16,16 +16,16 @@ export { default as useDownloadHelpers } from './useDownloadHelpers';
 
 // Exportar también los exports nombrados de useDownloadState
 export {
-    downloads,
-    downloadQueue,
-    speedStats,
-    pendingConfirmations,
-    showingDownloads,
-    selectedDownloads,
-    selectedHistoryDownloads,
-    currentDownloadIndex,
-    startingDownloads,
-    queueMutex,
-    timeoutManager,
-    MEMORY_LIMITS
+  downloads,
+  downloadQueue,
+  speedStats,
+  pendingConfirmations,
+  showingDownloads,
+  selectedDownloads,
+  selectedHistoryDownloads,
+  currentDownloadIndex,
+  startingDownloads,
+  queueMutex,
+  timeoutManager,
+  MEMORY_LIMITS,
 } from './useDownloadState';

@@ -1,529 +1,621 @@
 /**
- * useDownloadReconciliation - Reconciliación con backend y eventos
- * 
- * Maneja la sincronización con el backend y los eventos de progreso
+ * @fileoverview useDownloadReconciliation - Reconciliación con backend y eventos
+ * @module useDownloadReconciliation
+ *
+ * Maneja la sincronización con el backend y los eventos de progreso de descargas.
+ * Escucha eventos IPC del proceso principal, actualiza el estado local, y realiza
+ * reconciliación periódica para detectar descargas perdidas o desincronizadas.
+ *
+ * Características:
+ * - Escucha eventos de progreso en tiempo real
+ * - Reconciliación optimizada con el backend
+ * - Intervalos adaptativos según actividad
+ * - Restauración de descargas desde base de datos
+ *
+ * @author Myrient Downloader
+ * @version 2.0.0
  */
 
-import { downloads, downloadQueue, speedStats, pendingConfirmations, startingDownloads, currentDownloadIndex, timeoutManager } from './useDownloadState';
+/**
+ * @typedef {Object} ProgressEventInfo
+ * @property {number} id - ID de la descarga
+ * @property {string} title - Título del archivo
+ * @property {string} state - Estado: 'starting' | 'progressing' | 'merging' | 'completed' | 'interrupted' | 'paused' | 'awaiting-confirmation' | 'queued'
+ * @property {number} [percent] - Progreso (0.0 - 1.0)
+ * @property {number} [speed] - Velocidad en MB/s
+ * @property {number} [totalBytes] - Tamaño total en bytes
+ * @property {number} [downloadedBytes] - Bytes descargados
+ * @property {number} [remainingTime] - Tiempo restante en segundos
+ * @property {string} [savePath] - Ruta donde se guarda
+ * @property {string} [error] - Mensaje de error
+ * @property {boolean} [chunked] - Si es descarga fragmentada
+ * @property {number} [activeChunks] - Chunks activos
+ * @property {number} [completedChunks] - Chunks completados
+ * @property {number} [totalChunks] - Total de chunks
+ * @property {Array} [chunkProgress] - Progreso de cada chunk
+ */
+
+import {
+  downloads,
+  downloadQueue,
+  speedStats,
+  pendingConfirmations,
+  startingDownloads,
+  currentDownloadIndex,
+  timeoutManager,
+} from './useDownloadState';
 import * as api from '../../services/api';
 
 /**
- * Composable de reconciliación
+ * Composable para reconciliación con backend y eventos
+ *
+ * Gestiona la sincronización entre el estado del frontend y el backend,
+ * escuchando eventos de progreso y realizando reconciliación periódica
+ * para mantener consistencia.
+ *
  * @param {Function} processDownloadQueueFn - Función para procesar la cola
  * @param {Function} saveDownloadHistoryFn - Función para guardar historial
  * @param {Function} limitHistoryInMemoryFn - Función para limitar historial
- * @param {Function} getCurrentLimitsFn - Función para obtener límites
- * @param {Object} settings - Configuración desde useSettings
+ * @param {Function} getCurrentLimitsFn - Función para obtener límites actuales
+ * @param {Object} [settings=null] - Configuración desde useSettings
+ * @param {Object} [settings.showNotifications] - Ref con si mostrar notificaciones
+ * @returns {Object} Objeto con funciones de reconciliación
+ * @returns {Function} returns.handleProgressEvent - Maneja eventos de progreso
+ * @returns {Function} returns.handleDownloadsRestored - Maneja descargas restauradas
+ * @returns {Function} returns.reconcileWithBackend - Reconciliación manual con backend
+ * @returns {Function} returns.startReconciliation - Inicia listeners y reconciliación
+ * @returns {Function} returns.stopReconciliation - Detiene listeners y reconciliación
+ *
+ * @example
+ * const {
+ *   handleProgressEvent,
+ *   startReconciliation,
+ *   stopReconciliation
+ * } = useDownloadReconciliation(
+ *   processQueue,
+ *   saveHistory,
+ *   limitHistory,
+ *   getLimits,
+ *   settings
+ * );
+ *
+ * // Iniciar reconciliación al montar componente
+ * startReconciliation();
+ *
+ * // Detener al desmontar
+ * onUnmounted(() => {
+ *   stopReconciliation();
+ * });
  */
-export function useDownloadReconciliation(processDownloadQueueFn, saveDownloadHistoryFn, limitHistoryInMemoryFn, getCurrentLimitsFn, settings = null) {
-    const showNotifications = settings?.showNotifications || { value: true };
-    
-    // Helper para obtener el valor de showNotifications
-    const getShowNotifications = () => {
-        return showNotifications?.value ?? true;
+export function useDownloadReconciliation(
+  processDownloadQueueFn,
+  saveDownloadHistoryFn,
+  limitHistoryInMemoryFn,
+  getCurrentLimitsFn,
+  settings = null
+) {
+  const showNotifications = settings?.showNotifications || { value: true };
+
+  // Helper para obtener el valor de showNotifications
+  const getShowNotifications = () => {
+    return showNotifications?.value ?? true;
+  };
+
+  // Estado para optimización
+  let lastReconcileState = null;
+  let reconcileIntervalMs = 5000; // Intervalo base
+  const RECONCILE_ACTIVE_INTERVAL = 5000; // 5s cuando hay actividad
+  const RECONCILE_IDLE_INTERVAL = 15000; // 15s cuando no hay actividad
+
+  // Intervalos
+  let reconciliationInterval = null;
+  let rotationInterval = null;
+  let removeProgressListener = null;
+  let removeHistoryListener = null;
+  let removeRestoredListener = null;
+
+  /**
+   * Calcula un hash simple del estado actual para detectar cambios
+   */
+  const getStateHash = () => {
+    // Necesitamos acceso a activeDownloads, pero está en otro composable
+    // Por ahora, calculamos directamente
+    const activeCount = Object.values(downloads.value).filter(
+      d => d.state === 'progressing' || d.state === 'starting'
+    ).length;
+    const queueCount = downloadQueue.value.length;
+    const speedCount = speedStats.value.size;
+    return `${activeCount}-${queueCount}-${speedCount}`;
+  };
+
+  /**
+   * Maneja eventos de progreso desde el backend
+   */
+  const handleProgressEvent = info => {
+    if (!timeoutManager.isMounted || !downloads.value) return;
+
+    startingDownloads.delete(info.id);
+
+    let dl = downloads.value[info.id] || {
+      id: info.id,
+      title: info.title || `Descarga ${info.id}`,
+      addedAt: Date.now(),
     };
 
-    // Estado para optimización
-    let lastReconcileState = null;
-    let reconcileIntervalMs = 5000; // Intervalo base
-    const RECONCILE_ACTIVE_INTERVAL = 5000;   // 5s cuando hay actividad
-    const RECONCILE_IDLE_INTERVAL = 15000;    // 15s cuando no hay actividad
+    dl.id = info.id;
+    if (info.title) dl.title = info.title;
 
-    // Intervalos
-    let reconciliationInterval = null;
-    let rotationInterval = null;
-    let removeProgressListener = null;
-    let removeHistoryListener = null;
-    let removeRestoredListener = null;
+    switch (info.state) {
+      case 'starting':
+        dl.state = 'starting';
+        dl.percent = 0;
+        delete dl.error;
+        // Si es descarga chunked, guardar información inicial de chunks
+        if (info.chunked || info.numChunks) {
+          dl.chunked = true;
+          dl.totalChunks = info.numChunks || info.totalChunks || 0;
+          dl.activeChunks = 0;
+          dl.completedChunks = 0;
+          // Inicializar chunkProgress como array vacío si no viene
+          if (!dl.chunkProgress) {
+            dl.chunkProgress = [];
+          }
+        }
+        break;
 
-    /**
-     * Calcula un hash simple del estado actual para detectar cambios
-     */
-    const getStateHash = () => {
-        // Necesitamos acceso a activeDownloads, pero está en otro composable
-        // Por ahora, calculamos directamente
-        const activeCount = Object.values(downloads.value).filter(
-            d => d.state === 'progressing' || d.state === 'starting'
-        ).length;
-        const queueCount = downloadQueue.value.length;
-        const speedCount = speedStats.value.size;
-        return `${activeCount}-${queueCount}-${speedCount}`;
-    };
+      case 'progressing':
+        dl.state = 'progressing';
+        dl.percent = info.percent;
+        delete dl.error;
+        delete dl.merging;
+        delete dl.mergeProgress;
+        delete dl.mergeSpeed;
 
-    /**
-     * Maneja eventos de progreso desde el backend
-     */
-    const handleProgressEvent = (info) => {
-        if (!timeoutManager.isMounted || !downloads.value) return;
-
-        startingDownloads.delete(info.id);
-
-        let dl = downloads.value[info.id] || {
-            id: info.id,
-            title: info.title || `Descarga ${info.id}`,
-            addedAt: Date.now()
-        };
-
-        dl.id = info.id;
-        if (info.title) dl.title = info.title;
-
-        switch (info.state) {
-            case 'starting':
-                dl.state = 'starting';
-                dl.percent = 0;
-                delete dl.error;
-                // Si es descarga chunked, guardar información inicial de chunks
-                if (info.chunked || info.numChunks) {
-                    dl.chunked = true;
-                    dl.totalChunks = info.numChunks || info.totalChunks || 0;
-                    dl.activeChunks = 0;
-                    dl.completedChunks = 0;
-                    // Inicializar chunkProgress como array vacío si no viene
-                    if (!dl.chunkProgress) {
-                        dl.chunkProgress = [];
-                    }
-                }
-                break;
-
-            case 'progressing':
-                dl.state = 'progressing';
-                dl.percent = info.percent;
-                delete dl.error;
-                delete dl.merging;
-                delete dl.mergeProgress;
-                delete dl.mergeSpeed;
-                
-                // Guardar información granular de chunks si está disponible
-                // IMPORTANTE: Actualizar chunks incluso si chunked cambió, para mantener datos
-                if (info.chunked) {
-                    dl.chunked = true;
-                    // Solo actualizar chunkProgress si viene en el evento (no usar || [] para evitar perder datos)
-                    if (info.chunkProgress !== undefined && info.chunkProgress !== null) {
-                        dl.chunkProgress = Array.isArray(info.chunkProgress) ? info.chunkProgress : [];
-                    } else if (dl.chunkProgress === undefined) {
-                        // Solo establecer array vacío si no existe previamente
-                        dl.chunkProgress = [];
-                    }
-                    // Actualizar contadores si vienen
-                    if (info.activeChunks !== undefined) dl.activeChunks = info.activeChunks;
-                    if (info.completedChunks !== undefined) dl.completedChunks = info.completedChunks;
-                    if (info.totalChunks !== undefined) dl.totalChunks = info.totalChunks;
-                } else {
-                    // Si no es chunked, limpiar solo si realmente no hay información de chunks
-                    // Pero mantener chunkProgress si existe (puede ser útil para mostrar estado final)
-                    if (!info.chunkProgress || (Array.isArray(info.chunkProgress) && info.chunkProgress.length === 0)) {
-                        delete dl.chunked;
-                        // No eliminar chunkProgress inmediatamente, puede ser útil para mostrar estado
-                        // delete dl.chunkProgress;
-                        delete dl.activeChunks;
-                        delete dl.completedChunks;
-                        delete dl.totalChunks;
-                    }
-                }
-                
-                // Guardar remainingTime en el objeto download también
-                // Solo actualizar si viene un valor válido (no usar || 0 porque 0 es válido)
-                if (info.remainingTime !== undefined && info.remainingTime !== null && isFinite(info.remainingTime)) {
-                    dl.remainingTime = info.remainingTime;
-                } else if (dl.remainingTime === undefined) {
-                    // Solo establecer 0 si no existe previamente
-                    dl.remainingTime = 0;
-                }
-                
-                speedStats.value.set(info.id, {
-                    speed: info.speed || 0,
-                    totalBytes: info.totalBytes || 0,
-                    downloadedBytes: info.downloadedBytes || 0,
-                    remainingTime: info.remainingTime || 0
-                });
-                break;
-
-            case 'merging':
-                dl.state = 'merging';
-                dl.percent = info.percent || info.mergeProgress || 0;
-                delete dl.error;
-                dl.merging = true;
-                
-                // Guardar información de merge
-                dl.mergeProgress = info.mergeProgress || info.percent || 0;
-                dl.mergeSpeed = info.mergeSpeed || (info.speed || 0); // MB/s
-                dl.currentChunk = info.currentChunk;
-                dl.bytesProcessed = info.bytesProcessed;
-                
-                // Mantener información de chunks si está disponible
-                if (info.chunked || dl.chunked) {
-                    dl.chunked = true;
-                    dl.chunkProgress = info.chunkProgress || dl.chunkProgress || [];
-                    dl.totalChunks = info.totalChunks || dl.totalChunks || 0;
-                }
-                
-                speedStats.value.set(info.id, {
-                    speed: info.speed || info.mergeSpeed || 0,
-                    totalBytes: info.totalBytes || 0,
-                    downloadedBytes: info.bytesProcessed || info.downloadedBytes || 0,
-                    remainingTime: 0 // No hay tiempo restante en merge
-                });
-                break;
-
-            case 'completed':
-                dl.state = 'completed';
-                dl.percent = 1; // Asegurar 100% al completar
-                dl.completedAt = Date.now();
-                dl.savePath = info.savePath;
-                
-                // Limpiar información de merge si estaba fusionando
-                delete dl.merging;
-                delete dl.mergeProgress;
-                delete dl.mergeSpeed;
-                delete dl.currentChunk;
-                delete dl.bytesProcessed;
-                
-                // Mantener información de chunks para referencia (opcional)
-                // Se puede limpiar si no se necesita después de completar
-                if (dl.chunked) {
-                    // Opcionalmente limpiar información de chunks después de completar
-                    // delete dl.chunkProgress;
-                    // delete dl.activeChunks;
-                    // delete dl.completedChunks;
-                    // delete dl.totalChunks;
-                }
-                
-                speedStats.value.delete(info.id);
-                downloadQueue.value = downloadQueue.value.filter(d => d.id !== info.id);
-                if (saveDownloadHistoryFn) saveDownloadHistoryFn();
-                timeoutManager.safeSetTimeout(() => {
-                    if (processDownloadQueueFn) processDownloadQueueFn();
-                }, 100);
-                break;
-
-            case 'interrupted':
-            case 'cancelled':
-                dl.state = info.state;
-                dl.error = info.error || 'Descarga interrumpida';
-                speedStats.value.delete(info.id);
-                downloadQueue.value = downloadQueue.value.filter(d => d.id !== info.id);
-                if (saveDownloadHistoryFn) saveDownloadHistoryFn();
-                timeoutManager.safeSetTimeout(() => {
-                    if (processDownloadQueueFn) processDownloadQueueFn();
-                }, 100);
-                break;
-
-            case 'paused':
-                dl.state = 'paused';
-                dl.percent = info.percent || dl.percent;
-                speedStats.value.delete(info.id);
-                downloadQueue.value = downloadQueue.value.filter(d => d.id !== info.id);
-                break;
-
-            case 'awaiting-confirmation':
-                dl.state = 'waiting';
-                dl.savePath = info.savePath;
-                if (!pendingConfirmations.value.some(c => c.id === info.id)) {
-                    pendingConfirmations.value.push({
-                        id: info.id,
-                        title: info.title,
-                        savePath: info.savePath,
-                        existingSize: info.fileCheck?.existingSize,
-                        expectedSize: info.fileCheck?.expectedSize,
-                        showNotification: getShowNotifications()
-                    });
-                }
-                break;
-
-            case 'queued':
-                dl.state = 'queued';
-                if (info.position) dl.queuePosition = info.position;
-                break;
+        // Guardar información granular de chunks si está disponible
+        // IMPORTANTE: Actualizar chunks incluso si chunked cambió, para mantener datos
+        if (info.chunked) {
+          dl.chunked = true;
+          // Solo actualizar chunkProgress si viene en el evento (no usar || [] para evitar perder datos)
+          if (info.chunkProgress !== undefined && info.chunkProgress !== null) {
+            dl.chunkProgress = Array.isArray(info.chunkProgress) ? info.chunkProgress : [];
+          } else if (dl.chunkProgress === undefined) {
+            // Solo establecer array vacío si no existe previamente
+            dl.chunkProgress = [];
+          }
+          // Actualizar contadores si vienen
+          if (info.activeChunks !== undefined) dl.activeChunks = info.activeChunks;
+          if (info.completedChunks !== undefined) dl.completedChunks = info.completedChunks;
+          if (info.totalChunks !== undefined) dl.totalChunks = info.totalChunks;
+        } else {
+          // Si no es chunked, limpiar solo si realmente no hay información de chunks
+          // Pero mantener chunkProgress si existe (puede ser útil para mostrar estado final)
+          if (
+            !info.chunkProgress ||
+            (Array.isArray(info.chunkProgress) && info.chunkProgress.length === 0)
+          ) {
+            delete dl.chunked;
+            // No eliminar chunkProgress inmediatamente, puede ser útil para mostrar estado
+            // delete dl.chunkProgress;
+            delete dl.activeChunks;
+            delete dl.completedChunks;
+            delete dl.totalChunks;
+          }
         }
 
-        downloads.value[info.id] = dl;
-        
-        // Limitar historial en memoria después de actualizar
-        // Solo si la descarga se completó o falló (para no hacerlo en cada actualización de progreso)
-        if (['completed', 'interrupted', 'cancelled'].includes(info.state)) {
-            if (limitHistoryInMemoryFn && getCurrentLimitsFn) {
-                limitHistoryInMemoryFn(getCurrentLimitsFn());
-            }
+        // Guardar remainingTime en el objeto download también
+        // Solo actualizar si viene un valor válido (no usar || 0 porque 0 es válido)
+        if (
+          info.remainingTime !== undefined &&
+          info.remainingTime !== null &&
+          isFinite(info.remainingTime)
+        ) {
+          dl.remainingTime = info.remainingTime;
+        } else if (dl.remainingTime === undefined) {
+          // Solo establecer 0 si no existe previamente
+          dl.remainingTime = 0;
         }
-    };
 
-    /**
-     * Maneja el evento de descargas restauradas desde la base de datos
-     */
-    const handleDownloadsRestored = (allDownloads) => {
-        if (!timeoutManager.isMounted || !downloads.value || !Array.isArray(allDownloads)) return;
-
-        console.log(`[useDownloads] Restaurando ${allDownloads.length} descargas desde BD...`);
-
-        // Procesar cada descarga restaurada
-        allDownloads.forEach((dbDownload) => {
-            // Mapear el estado de la BD al estado del frontend
-            let state = dbDownload.state || 'completed';
-            
-            // Los timestamps de la BD son números (milisegundos desde epoch)
-            const createdAt = typeof dbDownload.createdAt === 'number' 
-                ? dbDownload.createdAt 
-                : (dbDownload.createdAt ? new Date(dbDownload.createdAt).getTime() : Date.now());
-            
-            const completedAt = dbDownload.completedAt 
-                ? (typeof dbDownload.completedAt === 'number' 
-                    ? dbDownload.completedAt 
-                    : new Date(dbDownload.completedAt).getTime())
-                : null;
-            
-            // Crear o actualizar la descarga en el estado del frontend
-            const dl = downloads.value[dbDownload.id] || {
-                id: dbDownload.id,
-                title: dbDownload.title || `Descarga ${dbDownload.id}`,
-                addedAt: createdAt
-            };
-
-            // Actualizar información básica
-            dl.id = dbDownload.id;
-            if (dbDownload.title) dl.title = dbDownload.title;
-            if (dbDownload.savePath) dl.savePath = dbDownload.savePath;
-            if (dbDownload.progress !== undefined && dbDownload.progress !== null) {
-                dl.percent = dbDownload.progress;
-            }
-            if (completedAt) dl.completedAt = completedAt;
-
-            // Mapear estados de la BD a estados del frontend
-            switch (state) {
-                case 'queued':
-                    dl.state = 'queued';
-                    if (dbDownload.queuePosition !== undefined && dbDownload.queuePosition !== null) {
-                        dl.queuePosition = dbDownload.queuePosition;
-                    }
-                    break;
-                case 'paused':
-                    dl.state = 'paused';
-                    break;
-                case 'starting':
-                case 'progressing':
-                case 'downloading':
-                    dl.state = state === 'downloading' ? 'progressing' : state;
-                    break;
-                case 'completed':
-                    dl.state = 'completed';
-                    dl.percent = 1;
-                    break;
-                case 'cancelled':
-                case 'interrupted':
-                case 'failed':
-                    dl.state = state === 'failed' ? 'interrupted' : state;
-                    dl.error = dbDownload.lastError || 'Descarga interrumpida';
-                    break;
-                default:
-                    // Si el estado no es reconocido, asumir completada
-                    dl.state = 'completed';
-                    dl.percent = 1;
-            }
-
-            // Guardar en el estado
-            downloads.value[dbDownload.id] = dl;
+        speedStats.value.set(info.id, {
+          speed: info.speed || 0,
+          totalBytes: info.totalBytes || 0,
+          downloadedBytes: info.downloadedBytes || 0,
+          remainingTime: info.remainingTime || 0,
         });
+        break;
 
-        console.log(`[useDownloads] ${allDownloads.length} descargas restauradas correctamente`);
-        
-        // Limitar historial después de restaurar
-        if (limitHistoryInMemoryFn && getCurrentLimitsFn) {
-            limitHistoryInMemoryFn(getCurrentLimitsFn());
+      case 'merging':
+        dl.state = 'merging';
+        dl.percent = info.percent || info.mergeProgress || 0;
+        delete dl.error;
+        dl.merging = true;
+
+        // Guardar información de merge
+        dl.mergeProgress = info.mergeProgress || info.percent || 0;
+        dl.mergeSpeed = info.mergeSpeed || info.speed || 0; // MB/s
+        dl.currentChunk = info.currentChunk;
+        dl.bytesProcessed = info.bytesProcessed;
+
+        // Mantener información de chunks si está disponible
+        if (info.chunked || dl.chunked) {
+          dl.chunked = true;
+          dl.chunkProgress = info.chunkProgress || dl.chunkProgress || [];
+          dl.totalChunks = info.totalChunks || dl.totalChunks || 0;
         }
-        
-        // Guardar historial actualizado
+
+        speedStats.value.set(info.id, {
+          speed: info.speed || info.mergeSpeed || 0,
+          totalBytes: info.totalBytes || 0,
+          downloadedBytes: info.bytesProcessed || info.downloadedBytes || 0,
+          remainingTime: 0, // No hay tiempo restante en merge
+        });
+        break;
+
+      case 'completed':
+        dl.state = 'completed';
+        dl.percent = 1; // Asegurar 100% al completar
+        dl.completedAt = Date.now();
+        dl.savePath = info.savePath;
+
+        // Limpiar información de merge si estaba fusionando
+        delete dl.merging;
+        delete dl.mergeProgress;
+        delete dl.mergeSpeed;
+        delete dl.currentChunk;
+        delete dl.bytesProcessed;
+
+        // Mantener información de chunks para referencia (opcional)
+        // Se puede limpiar si no se necesita después de completar
+        if (dl.chunked) {
+          // Opcionalmente limpiar información de chunks después de completar
+          // delete dl.chunkProgress;
+          // delete dl.activeChunks;
+          // delete dl.completedChunks;
+          // delete dl.totalChunks;
+        }
+
+        speedStats.value.delete(info.id);
+        downloadQueue.value = downloadQueue.value.filter(d => d.id !== info.id);
         if (saveDownloadHistoryFn) saveDownloadHistoryFn();
-    };
+        timeoutManager.safeSetTimeout(() => {
+          if (processDownloadQueueFn) processDownloadQueueFn();
+        }, 100);
+        break;
 
-    /**
-     * Reconciliación optimizada con el backend
-     * Solo se ejecuta cuando es necesario
-     */
-    const reconcileWithBackend = async () => {
-        // Skip 1: No hay descargas activas ni en cola
-        const activeCount = Object.values(downloads.value).filter(
-            d => d.state === 'progressing' || d.state === 'starting'
-        ).length;
-        const hasActiveWork = activeCount > 0 || 
-                              downloadQueue.value.some(d => d.status === 'queued');
-        
-        if (!hasActiveWork) {
-            // Limpiar speedStats huérfanas sin llamar al backend
-            if (speedStats.value.size > 0) {
-                speedStats.value.clear();
-                console.debug('[Reconcile] Limpiadas speedStats (sin descargas activas)');
-            }
-            return;
+      case 'interrupted':
+      case 'cancelled':
+        dl.state = info.state;
+        dl.error = info.error || 'Descarga interrumpida';
+        speedStats.value.delete(info.id);
+        downloadQueue.value = downloadQueue.value.filter(d => d.id !== info.id);
+        if (saveDownloadHistoryFn) saveDownloadHistoryFn();
+        timeoutManager.safeSetTimeout(() => {
+          if (processDownloadQueueFn) processDownloadQueueFn();
+        }, 100);
+        break;
+
+      case 'paused':
+        dl.state = 'paused';
+        dl.percent = info.percent || dl.percent;
+        speedStats.value.delete(info.id);
+        downloadQueue.value = downloadQueue.value.filter(d => d.id !== info.id);
+        break;
+
+      case 'awaiting-confirmation':
+        dl.state = 'waiting';
+        dl.savePath = info.savePath;
+        if (!pendingConfirmations.value.some(c => c.id === info.id)) {
+          pendingConfirmations.value.push({
+            id: info.id,
+            title: info.title,
+            savePath: info.savePath,
+            existingSize: info.fileCheck?.existingSize,
+            expectedSize: info.fileCheck?.expectedSize,
+            showNotification: getShowNotifications(),
+          });
         }
+        break;
 
-        // Skip 2: Estado no ha cambiado desde última reconciliación
-        const currentHash = getStateHash();
-        if (currentHash === lastReconcileState) {
-            console.debug('[Reconcile] Skip - estado sin cambios');
-            return;
+      case 'queued':
+        dl.state = 'queued';
+        if (info.position) dl.queuePosition = info.position;
+        break;
+    }
+
+    downloads.value[info.id] = dl;
+
+    // Limitar historial en memoria después de actualizar
+    // Solo si la descarga se completó o falló (para no hacerlo en cada actualización de progreso)
+    if (['completed', 'interrupted', 'cancelled'].includes(info.state)) {
+      if (limitHistoryInMemoryFn && getCurrentLimitsFn) {
+        limitHistoryInMemoryFn(getCurrentLimitsFn());
+      }
+    }
+  };
+
+  /**
+   * Maneja el evento de descargas restauradas desde la base de datos
+   */
+  const handleDownloadsRestored = allDownloads => {
+    if (!timeoutManager.isMounted || !downloads.value || !Array.isArray(allDownloads)) return;
+
+    console.log(`[useDownloads] Restaurando ${allDownloads.length} descargas desde BD...`);
+
+    // Procesar cada descarga restaurada
+    allDownloads.forEach(dbDownload => {
+      // Mapear el estado de la BD al estado del frontend
+      let state = dbDownload.state || 'completed';
+
+      // Los timestamps de la BD son números (milisegundos desde epoch)
+      const createdAt =
+        typeof dbDownload.createdAt === 'number'
+          ? dbDownload.createdAt
+          : dbDownload.createdAt
+            ? new Date(dbDownload.createdAt).getTime()
+            : Date.now();
+
+      const completedAt = dbDownload.completedAt
+        ? typeof dbDownload.completedAt === 'number'
+          ? dbDownload.completedAt
+          : new Date(dbDownload.completedAt).getTime()
+        : null;
+
+      // Crear o actualizar la descarga en el estado del frontend
+      const dl = downloads.value[dbDownload.id] || {
+        id: dbDownload.id,
+        title: dbDownload.title || `Descarga ${dbDownload.id}`,
+        addedAt: createdAt,
+      };
+
+      // Actualizar información básica
+      dl.id = dbDownload.id;
+      if (dbDownload.title) dl.title = dbDownload.title;
+      if (dbDownload.savePath) dl.savePath = dbDownload.savePath;
+      if (dbDownload.progress !== undefined && dbDownload.progress !== null) {
+        dl.percent = dbDownload.progress;
+      }
+      if (completedAt) dl.completedAt = completedAt;
+
+      // Mapear estados de la BD a estados del frontend
+      switch (state) {
+        case 'queued':
+          dl.state = 'queued';
+          if (dbDownload.queuePosition !== undefined && dbDownload.queuePosition !== null) {
+            dl.queuePosition = dbDownload.queuePosition;
+          }
+          break;
+        case 'paused':
+          dl.state = 'paused';
+          break;
+        case 'starting':
+        case 'progressing':
+        case 'downloading':
+          dl.state = state === 'downloading' ? 'progressing' : state;
+          break;
+        case 'completed':
+          dl.state = 'completed';
+          dl.percent = 1;
+          break;
+        case 'cancelled':
+        case 'interrupted':
+        case 'failed':
+          dl.state = state === 'failed' ? 'interrupted' : state;
+          dl.error = dbDownload.lastError || 'Descarga interrumpida';
+          break;
+        default:
+          // Si el estado no es reconocido, asumir completada
+          dl.state = 'completed';
+          dl.percent = 1;
+      }
+
+      // Guardar en el estado
+      downloads.value[dbDownload.id] = dl;
+    });
+
+    console.log(`[useDownloads] ${allDownloads.length} descargas restauradas correctamente`);
+
+    // Limitar historial después de restaurar
+    if (limitHistoryInMemoryFn && getCurrentLimitsFn) {
+      limitHistoryInMemoryFn(getCurrentLimitsFn());
+    }
+
+    // Guardar historial actualizado
+    if (saveDownloadHistoryFn) saveDownloadHistoryFn();
+  };
+
+  /**
+   * Reconciliación optimizada con el backend
+   * Solo se ejecuta cuando es necesario
+   */
+  const reconcileWithBackend = async () => {
+    // Skip 1: No hay descargas activas ni en cola
+    const activeCount = Object.values(downloads.value).filter(
+      d => d.state === 'progressing' || d.state === 'starting'
+    ).length;
+    const hasActiveWork = activeCount > 0 || downloadQueue.value.some(d => d.status === 'queued');
+
+    if (!hasActiveWork) {
+      // Limpiar speedStats huérfanas sin llamar al backend
+      if (speedStats.value.size > 0) {
+        speedStats.value.clear();
+        console.debug('[Reconcile] Limpiadas speedStats (sin descargas activas)');
+      }
+      return;
+    }
+
+    // Skip 2: Estado no ha cambiado desde última reconciliación
+    const currentHash = getStateHash();
+    if (currentHash === lastReconcileState) {
+      console.debug('[Reconcile] Skip - estado sin cambios');
+      return;
+    }
+
+    try {
+      const stats = await api.getDownloadStats();
+      if (!stats || !timeoutManager.isMounted) return;
+
+      const activeIds = new Set(stats.activeIds || []);
+      const queuedIds = new Set(stats.queuedIds || []);
+      let changes = 0;
+
+      // Reconciliar solo descargas activas/starting (no todas)
+      const activeDls = Object.values(downloads.value).filter(
+        d => d.state === 'progressing' || d.state === 'starting'
+      );
+
+      for (const dl of activeDls) {
+        if (
+          ['progressing', 'starting'].includes(dl.state) &&
+          !activeIds.has(dl.id) &&
+          !queuedIds.has(dl.id) &&
+          !startingDownloads.has(dl.id)
+        ) {
+          dl.state = 'interrupted';
+          dl.error = 'Conexión perdida';
+          speedStats.value.delete(dl.id);
+          changes++;
+          console.warn(`[Reconcile] Descarga ${dl.id} perdida en backend`);
         }
+      }
 
-        try {
-            const stats = await api.getDownloadStats();
-            if (!stats || !timeoutManager.isMounted) return;
-
-            const activeIds = new Set(stats.activeIds || []);
-            const queuedIds = new Set(stats.queuedIds || []);
-            let changes = 0;
-
-            // Reconciliar solo descargas activas/starting (no todas)
-            const activeDls = Object.values(downloads.value).filter(
-                d => d.state === 'progressing' || d.state === 'starting'
-            );
-            
-            for (const dl of activeDls) {
-                if (['progressing', 'starting'].includes(dl.state) &&
-                    !activeIds.has(dl.id) &&
-                    !queuedIds.has(dl.id) &&
-                    !startingDownloads.has(dl.id)) {
-                    
-                    dl.state = 'interrupted';
-                    dl.error = 'Conexión perdida';
-                    speedStats.value.delete(dl.id);
-                    changes++;
-                    console.warn(`[Reconcile] Descarga ${dl.id} perdida en backend`);
-                }
-            }
-
-            // Limpiar speedStats huérfanas
-            speedStats.value.forEach((_, id) => {
-                const dl = downloads.value[id];
-                if (!dl || !['progressing', 'starting'].includes(dl.state)) {
-                    speedStats.value.delete(id);
-                    changes++;
-                }
-            });
-
-            // Actualizar estado para próxima comparación
-            lastReconcileState = getStateHash();
-
-            if (changes > 0) {
-                console.debug(`[Reconcile] ${changes} cambios aplicados`);
-                if (saveDownloadHistoryFn) saveDownloadHistoryFn();
-            }
-
-        } catch (error) {
-            console.debug('[Reconcile] Error:', error.message);
+      // Limpiar speedStats huérfanas
+      speedStats.value.forEach((_, id) => {
+        const dl = downloads.value[id];
+        if (!dl || !['progressing', 'starting'].includes(dl.state)) {
+          speedStats.value.delete(id);
+          changes++;
         }
-    };
+      });
 
-    /**
-     * Ajusta el intervalo de reconciliación según la actividad
-     */
-    const adjustReconcileInterval = () => {
-        const activeCount = Object.values(downloads.value).filter(
-            d => d.state === 'progressing' || d.state === 'starting'
-        ).length;
-        const hasActiveWork = activeCount > 0;
-        const newInterval = hasActiveWork ? RECONCILE_ACTIVE_INTERVAL : RECONCILE_IDLE_INTERVAL;
-        
-        if (newInterval !== reconcileIntervalMs) {
-            reconcileIntervalMs = newInterval;
-            
-            // Reiniciar intervalo con nuevo timing
-            if (reconciliationInterval) {
-                clearInterval(reconciliationInterval);
-                reconciliationInterval = setInterval(async () => {
-                    if (!timeoutManager.isMounted) return;
-                    adjustReconcileInterval(); // Auto-ajustar en cada tick
-                    await reconcileWithBackend();
-                }, reconcileIntervalMs);
-            }
-            
-            console.debug(`[Reconcile] Intervalo ajustado a ${reconcileIntervalMs}ms`);
-        }
-    };
+      // Actualizar estado para próxima comparación
+      lastReconcileState = getStateHash();
 
-    /**
-     * Inicia la reconciliación y los listeners
-     */
-    const startReconciliation = () => {
-        // Intervalo de rotación de nombre de descarga
-        rotationInterval = setInterval(() => {
-            if (!timeoutManager.isMounted) return;
-            if (speedStats.value.size > 0) {
-                currentDownloadIndex.value = (currentDownloadIndex.value + 1) % speedStats.value.size;
-            }
-        }, 5000);
+      if (changes > 0) {
+        console.debug(`[Reconcile] ${changes} cambios aplicados`);
+        if (saveDownloadHistoryFn) saveDownloadHistoryFn();
+      }
+    } catch (error) {
+      console.debug('[Reconcile] Error:', error.message);
+    }
+  };
 
-        // Iniciar reconciliación con intervalo adaptativo
+  /**
+   * Ajusta el intervalo de reconciliación según la actividad
+   */
+  const adjustReconcileInterval = () => {
+    const activeCount = Object.values(downloads.value).filter(
+      d => d.state === 'progressing' || d.state === 'starting'
+    ).length;
+    const hasActiveWork = activeCount > 0;
+    const newInterval = hasActiveWork ? RECONCILE_ACTIVE_INTERVAL : RECONCILE_IDLE_INTERVAL;
+
+    if (newInterval !== reconcileIntervalMs) {
+      reconcileIntervalMs = newInterval;
+
+      // Reiniciar intervalo con nuevo timing
+      if (reconciliationInterval) {
+        clearInterval(reconciliationInterval);
         reconciliationInterval = setInterval(async () => {
-            if (!timeoutManager.isMounted) return;
-            adjustReconcileInterval();
-            await reconcileWithBackend();
-            // Limpiar historial periódicamente (cada 5 reconciliaciones aprox)
-            if (Math.random() < 0.2 && limitHistoryInMemoryFn && getCurrentLimitsFn) { // 20% de probabilidad = ~cada 5 reconciliaciones
-                limitHistoryInMemoryFn(getCurrentLimitsFn());
-            }
+          if (!timeoutManager.isMounted) return;
+          adjustReconcileInterval(); // Auto-ajustar en cada tick
+          await reconcileWithBackend();
         }, reconcileIntervalMs);
+      }
 
-        // Escuchar eventos de progreso
-        removeProgressListener = api.onDownloadProgress(handleProgressEvent);
-        
-        // Escuchar eventos de limpieza de historial desde el backend
-        removeHistoryListener = api.onHistoryCleaned((data) => {
-            if (showNotifications.value && data.count > 0) {
-                console.log(`[useDownloads] Historial limpiado en BD: ${data.count} registros antiguos eliminados`);
-                // Emitir evento para mostrar notificación (se manejará en App.vue)
-                if (typeof window !== 'undefined' && window.dispatchEvent) {
-                    window.dispatchEvent(new CustomEvent('history-cleaned', { 
-                        detail: { count: data.count } 
-                    }));
-                }
-            }
-        });
-        
-        // Escuchar eventos de descargas restauradas desde el backend
-        removeRestoredListener = api.onDownloadsRestored(handleDownloadsRestored);
-    };
+      console.debug(`[Reconcile] Intervalo ajustado a ${reconcileIntervalMs}ms`);
+    }
+  };
 
-    /**
-     * Detiene la reconciliación y limpia listeners
-     */
-    const stopReconciliation = () => {
-        // Limpiar intervalos
-        if (rotationInterval) {
-            clearInterval(rotationInterval);
-            rotationInterval = null;
+  /**
+   * Inicia la reconciliación y los listeners
+   */
+  const startReconciliation = () => {
+    // Intervalo de rotación de nombre de descarga
+    rotationInterval = setInterval(() => {
+      if (!timeoutManager.isMounted) return;
+      if (speedStats.value.size > 0) {
+        currentDownloadIndex.value = (currentDownloadIndex.value + 1) % speedStats.value.size;
+      }
+    }, 5000);
+
+    // Iniciar reconciliación con intervalo adaptativo
+    reconciliationInterval = setInterval(async () => {
+      if (!timeoutManager.isMounted) return;
+      adjustReconcileInterval();
+      await reconcileWithBackend();
+      // Limpiar historial periódicamente (cada 5 reconciliaciones aprox)
+      if (Math.random() < 0.2 && limitHistoryInMemoryFn && getCurrentLimitsFn) {
+        // 20% de probabilidad = ~cada 5 reconciliaciones
+        limitHistoryInMemoryFn(getCurrentLimitsFn());
+      }
+    }, reconcileIntervalMs);
+
+    // Escuchar eventos de progreso
+    removeProgressListener = api.onDownloadProgress(handleProgressEvent);
+
+    // Escuchar eventos de limpieza de historial desde el backend
+    removeHistoryListener = api.onHistoryCleaned(data => {
+      if (showNotifications.value && data.count > 0) {
+        console.log(
+          `[useDownloads] Historial limpiado en BD: ${data.count} registros antiguos eliminados`
+        );
+        // Emitir evento para mostrar notificación (se manejará en App.vue)
+        if (typeof window !== 'undefined' && window.dispatchEvent) {
+          window.dispatchEvent(
+            new CustomEvent('history-cleaned', {
+              detail: { count: data.count },
+            })
+          );
         }
+      }
+    });
 
-        if (reconciliationInterval) {
-            clearInterval(reconciliationInterval);
-            reconciliationInterval = null;
-        }
+    // Escuchar eventos de descargas restauradas desde el backend
+    removeRestoredListener = api.onDownloadsRestored(handleDownloadsRestored);
+  };
 
-        // Remover listeners
-        if (removeProgressListener) {
-            removeProgressListener();
-            removeProgressListener = null;
-        }
-        
-        if (removeHistoryListener) {
-            removeHistoryListener();
-            removeHistoryListener = null;
-        }
-        
-        if (removeRestoredListener) {
-            removeRestoredListener();
-            removeRestoredListener = null;
-        }
+  /**
+   * Detiene la reconciliación y limpia listeners
+   */
+  const stopReconciliation = () => {
+    // Limpiar intervalos
+    if (rotationInterval) {
+      clearInterval(rotationInterval);
+      rotationInterval = null;
+    }
 
-        // Resetear estado de reconciliación
-        lastReconcileState = null;
-        reconcileIntervalMs = RECONCILE_ACTIVE_INTERVAL;
-    };
+    if (reconciliationInterval) {
+      clearInterval(reconciliationInterval);
+      reconciliationInterval = null;
+    }
 
-    return {
-        handleProgressEvent,
-        handleDownloadsRestored,
-        reconcileWithBackend,
-        startReconciliation,
-        stopReconciliation
-    };
+    // Remover listeners
+    if (removeProgressListener) {
+      removeProgressListener();
+      removeProgressListener = null;
+    }
+
+    if (removeHistoryListener) {
+      removeHistoryListener();
+      removeHistoryListener = null;
+    }
+
+    if (removeRestoredListener) {
+      removeRestoredListener();
+      removeRestoredListener = null;
+    }
+
+    // Resetear estado de reconciliación
+    lastReconcileState = null;
+    reconcileIntervalMs = RECONCILE_ACTIVE_INTERVAL;
+  };
+
+  return {
+    handleProgressEvent,
+    handleDownloadsRestored,
+    reconcileWithBackend,
+    startReconciliation,
+    stopReconciliation,
+  };
 }
 
 export default useDownloadReconciliation;

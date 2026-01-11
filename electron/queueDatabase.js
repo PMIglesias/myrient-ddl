@@ -1,17 +1,59 @@
 /**
- * QueueDatabase - Sistema de cola persistente con SQLite
- * 
+ * @fileoverview QueueDatabase - Sistema de cola persistente con SQLite
+ * @module queueDatabase
+ *
  * Maneja toda la persistencia de descargas incluyendo:
- * - Estados: queued, downloading, paused, completed, failed, cancelled
- * - Fragmentos parciales para reanudación
- * - Historial de descargas
- * - Estadísticas
- * 
+ * - Estados: queued, downloading, paused, completed, failed, cancelled, awaiting
+ * - Fragmentos parciales (chunks) para reanudación
+ * - Historial de descargas para estadísticas
+ * - Metadatos y configuración
+ *
  * Decisiones técnicas:
- * - SQLite en modo WAL para mejor concurrencia y resistencia a crashes
- * - Prepared statements para rendimiento óptimo
+ * - SQLite en modo WAL (Write-Ahead Logging) para mejor concurrencia y resistencia a crashes
+ * - Prepared statements reutilizables para rendimiento óptimo
  * - Transacciones ACID para consistencia de datos
- * - Índices optimizados para queries frecuentes
+ * - Índices optimizados para queries frecuentes (estado, prioridad, fecha)
+ * - Recuperación automática de descargas interrumpidas
+ *
+ * @author Myrient Downloader
+ * @version 2.0.0
+ */
+
+/**
+ * @typedef {Object} DownloadRecord
+ * @property {number} id - ID único de la descarga
+ * @property {string} title - Nombre del archivo
+ * @property {string} [url] - URL de descarga
+ * @property {string} [save_path] - Ruta de guardado
+ * @property {string} [download_path] - Directorio base configurado
+ * @property {boolean} preserve_structure - Si mantener estructura de carpetas
+ * @property {string} state - Estado actual: 'queued' | 'downloading' | 'paused' | 'completed' | 'failed' | 'cancelled' | 'awaiting'
+ * @property {number} progress - Progreso (0.0 - 1.0)
+ * @property {number} downloaded_bytes - Bytes descargados
+ * @property {number} total_bytes - Tamaño total del archivo
+ * @property {number} priority - Prioridad (0-3)
+ * @property {boolean} force_overwrite - Si forzar sobrescritura
+ * @property {number} created_at - Timestamp de creación
+ * @property {number} [started_at] - Timestamp de inicio
+ * @property {number} [completed_at] - Timestamp de completado
+ * @property {number} updated_at - Última actualización
+ * @property {number} retry_count - Intentos realizados
+ * @property {number} max_retries - Máximo de reintentos
+ * @property {string} [last_error] - Último error
+ */
+
+/**
+ * @typedef {Object} ChunkRecord
+ * @property {number} id - ID único del chunk
+ * @property {number} download_id - ID de la descarga padre
+ * @property {number} chunk_index - Índice del chunk (0-based)
+ * @property {number} start_byte - Byte inicial
+ * @property {number} end_byte - Byte final
+ * @property {number} downloaded_bytes - Bytes descargados en este chunk
+ * @property {string} state - Estado: 'pending' | 'downloading' | 'completed' | 'failed'
+ * @property {string} [temp_file] - Archivo temporal del chunk
+ * @property {number} created_at - Timestamp de creación
+ * @property {number} updated_at - Última actualización
  */
 
 const Database = require('better-sqlite3');
@@ -32,13 +74,13 @@ const log = logger.child('QueueDB');
  * @enum {string}
  */
 const DownloadState = Object.freeze({
-    QUEUED: 'queued',           // En cola, esperando
-    DOWNLOADING: 'downloading', // Descargando activamente
-    PAUSED: 'paused',          // Pausada por el usuario
-    COMPLETED: 'completed',     // Completada exitosamente
-    FAILED: 'failed',          // Falló después de reintentos
-    CANCELLED: 'cancelled',     // Cancelada por el usuario
-    AWAITING: 'awaiting'       // Esperando confirmación (archivo existente)
+  QUEUED: 'queued', // En cola, esperando
+  DOWNLOADING: 'downloading', // Descargando activamente
+  PAUSED: 'paused', // Pausada por el usuario
+  COMPLETED: 'completed', // Completada exitosamente
+  FAILED: 'failed', // Falló después de reintentos
+  CANCELLED: 'cancelled', // Cancelada por el usuario
+  AWAITING: 'awaiting', // Esperando confirmación (archivo existente)
 });
 
 /**
@@ -47,10 +89,10 @@ const DownloadState = Object.freeze({
  * @enum {number}
  */
 const DownloadPriority = Object.freeze({
-    LOW: 0,
-    NORMAL: 1,
-    HIGH: 2,
-    URGENT: 3
+  LOW: 0,
+  NORMAL: 1,
+  HIGH: 2,
+  URGENT: 3,
 });
 
 // =====================
@@ -146,98 +188,145 @@ CREATE INDEX IF NOT EXISTS idx_history_created ON download_history(created_at DE
 // CLASE PRINCIPAL
 // =====================
 
+/**
+ * Base de datos de cola persistente para descargas
+ *
+ * Gestiona toda la persistencia de descargas usando SQLite. Permite que las
+ * descargas sobrevivan a reinicios de la aplicación y soporta reanudación
+ * automática de descargas interrumpidas.
+ *
+ * @class QueueDatabase
+ *
+ * @example
+ * const queueDatabase = require('./queueDatabase');
+ *
+ * // Inicializar antes de usar
+ * const initialized = queueDatabase.initialize();
+ * if (initialized) {
+ *   // Agregar descarga a la cola
+ *   queueDatabase.addDownload({
+ *     id: 12345,
+ *     title: 'archivo.zip',
+ *     downloadPath: 'C:/Downloads',
+ *     preserveStructure: true,
+ *     priority: 1
+ *   });
+ *
+ *   // Obtener descargas en cola
+ *   const queued = queueDatabase.getQueued();
+ *   console.log(`${queued.length} descargas en cola`);
+ * }
+ */
 class QueueDatabase {
-    constructor() {
-        this.db = null;
-        this.statements = null;
-        this.isInitialized = false;
+  /**
+   * Crea una nueva instancia de QueueDatabase
+   *
+   * @constructor
+   */
+  constructor() {
+    this.db = null;
+    this.statements = null;
+    this.isInitialized = false;
+  }
+
+  // =====================
+  // INICIALIZACIÓN
+  // =====================
+
+  /**
+   * Inicializa la base de datos de cola
+   *
+   * Crea o abre la base de datos SQLite, crea el schema si no existe,
+   * prepara todos los statements optimizados, y recupera descargas
+   * interrumpidas de sesiones anteriores.
+   *
+   * @returns {boolean} true si se inicializó correctamente, false en caso de error
+   *
+   * @example
+   * const success = queueDatabase.initialize();
+   * if (success) {
+   *   console.log('Base de datos de cola inicializada');
+   *   // Ahora se pueden hacer operaciones
+   * } else {
+   *   console.error('Error inicializando base de datos');
+   * }
+   */
+  initialize() {
+    if (this.isInitialized) {
+      log.warn('QueueDatabase ya está inicializada');
+      return true;
     }
 
-    // =====================
-    // INICIALIZACIÓN
-    // =====================
+    const endInit = log.startOperation('Inicialización QueueDB');
 
-    /**
-     * Inicializa la base de datos de cola
-     * @returns {boolean} true si se inicializó correctamente
-     */
-    initialize() {
-        if (this.isInitialized) {
-            log.warn('QueueDatabase ya está inicializada');
-            return true;
-        }
+    try {
+      // Asegurar que existe el directorio
+      const dbDir = path.dirname(config.paths.queueDbPath);
+      if (!fs.existsSync(dbDir)) {
+        fs.mkdirSync(dbDir, { recursive: true });
+        log.info('Directorio de DB creado:', dbDir);
+      }
 
-        const endInit = log.startOperation('Inicialización QueueDB');
+      // Abrir/crear base de datos
+      this.db = new Database(config.paths.queueDbPath, {
+        // verbose: log.debug.bind(log) // Descomentar para debug SQL
+      });
 
-        try {
-            // Asegurar que existe el directorio
-            const dbDir = path.dirname(config.paths.queueDbPath);
-            if (!fs.existsSync(dbDir)) {
-                fs.mkdirSync(dbDir, { recursive: true });
-                log.info('Directorio de DB creado:', dbDir);
-            }
+      // Configurar para mejor rendimiento y resistencia a crashes
+      this.db.pragma('journal_mode = WAL'); // Write-Ahead Logging
+      this.db.pragma('synchronous = NORMAL'); // Balance entre seguridad y velocidad
+      this.db.pragma('cache_size = -64000'); // 64MB de caché
+      this.db.pragma('temp_store = MEMORY'); // Temporales en memoria
+      this.db.pragma('foreign_keys = ON'); // Integridad referencial
 
-            // Abrir/crear base de datos
-            this.db = new Database(config.paths.queueDbPath, {
-                // verbose: log.debug.bind(log) // Descomentar para debug SQL
-            });
+      // Crear/actualizar schema
+      this._initializeSchema();
 
-            // Configurar para mejor rendimiento y resistencia a crashes
-            this.db.pragma('journal_mode = WAL');      // Write-Ahead Logging
-            this.db.pragma('synchronous = NORMAL');    // Balance entre seguridad y velocidad
-            this.db.pragma('cache_size = -64000');     // 64MB de caché
-            this.db.pragma('temp_store = MEMORY');     // Temporales en memoria
-            this.db.pragma('foreign_keys = ON');       // Integridad referencial
+      // Preparar statements
+      this._prepareStatements();
 
-            // Crear/actualizar schema
-            this._initializeSchema();
+      // Recuperar descargas interrumpidas
+      this._recoverInterruptedDownloads();
 
-            // Preparar statements
-            this._prepareStatements();
+      this.isInitialized = true;
+      endInit(`DB en ${config.paths.queueDbPath}`);
 
-            // Recuperar descargas interrumpidas
-            this._recoverInterruptedDownloads();
-
-            this.isInitialized = true;
-            endInit(`DB en ${config.paths.queueDbPath}`);
-
-            return true;
-
-        } catch (error) {
-            log.error('Error inicializando QueueDatabase:', error);
-            return false;
-        }
+      return true;
+    } catch (error) {
+      log.error('Error inicializando QueueDatabase:', error);
+      return false;
     }
+  }
 
-    /**
-     * Inicializa el schema de la base de datos
-     */
-    _initializeSchema() {
-        log.debug('Verificando schema...');
+  /**
+   * Inicializa el schema de la base de datos
+   */
+  _initializeSchema() {
+    log.debug('Verificando schema...');
 
-        // Ejecutar creación de tablas
-        this.db.exec(CREATE_TABLES_SQL);
+    // Ejecutar creación de tablas
+    this.db.exec(CREATE_TABLES_SQL);
 
-        // Verificar/actualizar versión del schema
-        const versionStmt = this.db.prepare(
-            'INSERT OR REPLACE INTO metadata (key, value, updated_at) VALUES (?, ?, ?)'
-        );
-        versionStmt.run('schema_version', String(SCHEMA_VERSION), Date.now());
+    // Verificar/actualizar versión del schema
+    const versionStmt = this.db.prepare(
+      'INSERT OR REPLACE INTO metadata (key, value, updated_at) VALUES (?, ?, ?)'
+    );
+    versionStmt.run('schema_version', String(SCHEMA_VERSION), Date.now());
 
-        log.debug('Schema inicializado (versión ' + SCHEMA_VERSION + ')');
-    }
+    log.debug('Schema inicializado (versión ' + SCHEMA_VERSION + ')');
+  }
 
-    /**
-     * Prepara todos los statements reutilizables
-     */
-    _prepareStatements() {
-        log.debug('Preparando statements...');
+  /**
+   * Prepara todos los statements reutilizables
+   */
+  _prepareStatements() {
+    log.debug('Preparando statements...');
 
-        this.statements = {
-            // ===== CRUD DESCARGAS =====
+    this.statements = {
+      // ===== CRUD DESCARGAS =====
 
-            /** Insertar nueva descarga */
-            insertDownload: this.db.prepare(`
+      /** Insertar nueva descarga */
+      insertDownload: this.db.prepare(`
                 INSERT INTO downloads (
                     id, title, url, save_path, download_path, preserve_structure,
                     state, progress, downloaded_bytes, total_bytes,
@@ -251,8 +340,8 @@ class QueueDatabase {
                 )
             `),
 
-            /** Actualizar descarga existente */
-            updateDownload: this.db.prepare(`
+      /** Actualizar descarga existente */
+      updateDownload: this.db.prepare(`
                 UPDATE downloads SET
                     state = COALESCE(@state, state),
                     progress = COALESCE(@progress, progress),
@@ -269,16 +358,16 @@ class QueueDatabase {
                 WHERE id = @id
             `),
 
-            /** Actualizar solo estado */
-            updateState: this.db.prepare(`
+      /** Actualizar solo estado */
+      updateState: this.db.prepare(`
                 UPDATE downloads SET
                     state = @state,
                     updated_at = @updatedAt
                 WHERE id = @id
             `),
 
-            /** Actualizar progreso (optimizado para llamadas frecuentes) */
-            updateProgress: this.db.prepare(`
+      /** Actualizar progreso (optimizado para llamadas frecuentes) */
+      updateProgress: this.db.prepare(`
                 UPDATE downloads SET
                     progress = @progress,
                     downloaded_bytes = @downloadedBytes,
@@ -286,49 +375,49 @@ class QueueDatabase {
                 WHERE id = @id
             `),
 
-            /** Obtener descarga por ID */
-            getById: this.db.prepare(`
+      /** Obtener descarga por ID */
+      getById: this.db.prepare(`
                 SELECT * FROM downloads WHERE id = ?
             `),
 
-            /** Eliminar descarga */
-            deleteDownload: this.db.prepare(`
+      /** Eliminar descarga */
+      deleteDownload: this.db.prepare(`
                 DELETE FROM downloads WHERE id = ?
             `),
 
-            // ===== QUERIES DE COLA =====
+      // ===== QUERIES DE COLA =====
 
-            /** Obtener todas las descargas en cola ordenadas por prioridad */
-            getQueued: this.db.prepare(`
+      /** Obtener todas las descargas en cola ordenadas por prioridad */
+      getQueued: this.db.prepare(`
                 SELECT * FROM downloads
                 WHERE state = 'queued'
                 ORDER BY priority DESC, queue_position ASC, created_at ASC
             `),
 
-            /** Obtener descargas activas (downloading) */
-            getActive: this.db.prepare(`
+      /** Obtener descargas activas (downloading) */
+      getActive: this.db.prepare(`
                 SELECT * FROM downloads
                 WHERE state = 'downloading'
                 ORDER BY started_at ASC
             `),
 
-            /** Obtener descargas pausadas */
-            getPaused: this.db.prepare(`
+      /** Obtener descargas pausadas */
+      getPaused: this.db.prepare(`
                 SELECT * FROM downloads
                 WHERE state = 'paused'
                 ORDER BY updated_at DESC
             `),
 
-            /** Obtener historial (completadas, fallidas, canceladas) */
-            getHistory: this.db.prepare(`
+      /** Obtener historial (completadas, fallidas, canceladas) */
+      getHistory: this.db.prepare(`
                 SELECT * FROM downloads
                 WHERE state IN ('completed', 'failed', 'cancelled')
                 ORDER BY updated_at DESC
                 LIMIT ?
             `),
 
-            /** Obtener todas las descargas (para UI) */
-            getAll: this.db.prepare(`
+      /** Obtener todas las descargas (para UI) */
+      getAll: this.db.prepare(`
                 SELECT * FROM downloads
                 ORDER BY 
                     CASE state 
@@ -343,29 +432,29 @@ class QueueDatabase {
                     updated_at DESC
             `),
 
-            /** Contar descargas por estado */
-            countByState: this.db.prepare(`
+      /** Contar descargas por estado */
+      countByState: this.db.prepare(`
                 SELECT state, COUNT(*) as count
                 FROM downloads
                 GROUP BY state
             `),
 
-            /** Obtener siguiente posición en cola */
-            getNextQueuePosition: this.db.prepare(`
+      /** Obtener siguiente posición en cola */
+      getNextQueuePosition: this.db.prepare(`
                 SELECT COALESCE(MAX(queue_position), 0) + 1 as next
                 FROM downloads
                 WHERE state = 'queued'
             `),
 
-            /** Verificar si existe descarga */
-            exists: this.db.prepare(`
+      /** Verificar si existe descarga */
+      exists: this.db.prepare(`
                 SELECT 1 FROM downloads WHERE id = ? LIMIT 1
             `),
 
-            // ===== CHUNKS =====
+      // ===== CHUNKS =====
 
-            /** Insertar chunk */
-            insertChunk: this.db.prepare(`
+      /** Insertar chunk */
+      insertChunk: this.db.prepare(`
                 INSERT INTO download_chunks (
                     download_id, chunk_index, start_byte, end_byte,
                     downloaded_bytes, state, temp_file, created_at, updated_at
@@ -375,8 +464,8 @@ class QueueDatabase {
                 )
             `),
 
-            /** Actualizar chunk (con soporte para temp_file - Block 2) */
-            updateChunk: this.db.prepare(`
+      /** Actualizar chunk (con soporte para temp_file - Block 2) */
+      updateChunk: this.db.prepare(`
                 UPDATE download_chunks SET
                     downloaded_bytes = COALESCE(@downloadedBytes, downloaded_bytes),
                     state = COALESCE(@state, state),
@@ -385,343 +474,447 @@ class QueueDatabase {
                 WHERE download_id = @downloadId AND chunk_index = @chunkIndex
             `),
 
-            /** Obtener chunks de una descarga */
-            getChunks: this.db.prepare(`
+      /** Obtener chunks de una descarga */
+      getChunks: this.db.prepare(`
                 SELECT * FROM download_chunks
                 WHERE download_id = ?
                 ORDER BY chunk_index ASC
             `),
 
-            /** Eliminar chunks de una descarga */
-            deleteChunks: this.db.prepare(`
+      /** Eliminar chunks de una descarga */
+      deleteChunks: this.db.prepare(`
                 DELETE FROM download_chunks WHERE download_id = ?
             `),
 
-            // ===== HISTORIAL =====
+      // ===== HISTORIAL =====
 
-            /** Insertar evento en historial */
-            insertHistory: this.db.prepare(`
+      /** Insertar evento en historial */
+      insertHistory: this.db.prepare(`
                 INSERT INTO download_history (download_id, event_type, event_data, created_at)
                 VALUES (@downloadId, @eventType, @eventData, @createdAt)
             `),
 
-            /** Obtener historial de una descarga */
-            getDownloadHistory: this.db.prepare(`
+      /** Obtener historial de una descarga */
+      getDownloadHistory: this.db.prepare(`
                 SELECT * FROM download_history
                 WHERE download_id = ?
                 ORDER BY created_at DESC
             `),
 
-            // ===== LIMPIEZA =====
+      // ===== LIMPIEZA =====
 
-            /** Limpiar historial antiguo */
-            cleanOldHistory: this.db.prepare(`
+      /** Limpiar historial antiguo */
+      cleanOldHistory: this.db.prepare(`
                 DELETE FROM downloads
                 WHERE state IN ('completed', 'failed', 'cancelled')
                 AND updated_at < ?
             `),
 
-            /** Limpiar todo el historial */
-            clearHistory: this.db.prepare(`
+      /** Limpiar todo el historial */
+      clearHistory: this.db.prepare(`
                 DELETE FROM downloads
                 WHERE state IN ('completed', 'failed', 'cancelled')
             `),
 
-            /** Resetear descargas interrumpidas a estado queued */
-            recoverInterrupted: this.db.prepare(`
+      /** Resetear descargas interrumpidas a estado queued */
+      recoverInterrupted: this.db.prepare(`
                 UPDATE downloads SET
                     state = 'queued',
                     updated_at = ?
                 WHERE state = 'downloading'
-            `)
-        };
+            `),
+    };
 
-        log.debug('Statements preparados');
+    log.debug('Statements preparados');
+  }
+
+  /**
+   * Recupera descargas que estaban en progreso cuando se cerró la app
+   */
+  _recoverInterruptedDownloads() {
+    const now = Date.now();
+
+    // Las descargas que estaban "downloading" se ponen en "queued" para reiniciar
+    const result = this.statements.recoverInterrupted.run(now);
+
+    if (result.changes > 0) {
+      log.info(`Recuperadas ${result.changes} descargas interrumpidas`);
+
+      // Registrar en historial
+      const interrupted = this.getByState(DownloadState.QUEUED);
+      interrupted.forEach(d => {
+        this._logEvent(d.id, 'recovered', { previousState: 'downloading' });
+      });
+    }
+  }
+
+  // =====================
+  // OPERACIONES CRUD
+  // =====================
+
+  /**
+   * Agrega una nueva descarga a la cola
+   * @param {Object} download - Datos de la descarga
+   * @returns {Object} La descarga creada o null si ya existe
+   */
+  addDownload(download) {
+    if (!download.id || !download.title) {
+      log.error('addDownload: ID y título son requeridos');
+      return null;
     }
 
-    /**
-     * Recupera descargas que estaban en progreso cuando se cerró la app
-     */
-    _recoverInterruptedDownloads() {
-        const now = Date.now();
-
-        // Las descargas que estaban "downloading" se ponen en "queued" para reiniciar
-        const result = this.statements.recoverInterrupted.run(now);
-
-        if (result.changes > 0) {
-            log.info(`Recuperadas ${result.changes} descargas interrumpidas`);
-
-            // Registrar en historial
-            const interrupted = this.getByState(DownloadState.QUEUED);
-            interrupted.forEach(d => {
-                this._logEvent(d.id, 'recovered', { previousState: 'downloading' });
-            });
-        }
+    // Verificar si ya existe
+    if (this.exists(download.id)) {
+      log.warn(`Descarga ${download.id} ya existe`);
+      return null;
     }
 
-    // =====================
-    // OPERACIONES CRUD
-    // =====================
+    const now = Date.now();
+    const nextPosition = this.statements.getNextQueuePosition.get().next;
 
-    /**
-     * Agrega una nueva descarga a la cola
-     * @param {Object} download - Datos de la descarga
-     * @returns {Object} La descarga creada o null si ya existe
-     */
-    addDownload(download) {
-        if (!download.id || !download.title) {
-            log.error('addDownload: ID y título son requeridos');
-            return null;
-        }
+    try {
+      this.statements.insertDownload.run({
+        id: download.id,
+        title: download.title,
+        url: download.url || null,
+        savePath: download.savePath || null,
+        downloadPath: download.downloadPath || null,
+        preserveStructure: download.preserveStructure ? 1 : 0,
+        state: download.state || DownloadState.QUEUED,
+        progress: download.progress || 0,
+        downloadedBytes: download.downloadedBytes || 0,
+        totalBytes: download.totalBytes || 0,
+        priority: download.priority ?? DownloadPriority.NORMAL,
+        forceOverwrite: download.forceOverwrite ? 1 : 0,
+        createdAt: now,
+        updatedAt: now,
+        queuePosition: nextPosition,
+      });
 
-        // Verificar si ya existe
-        if (this.exists(download.id)) {
-            log.warn(`Descarga ${download.id} ya existe`);
-            return null;
-        }
+      // Registrar en historial
+      this._logEvent(download.id, 'created', { title: download.title });
 
-        const now = Date.now();
-        const nextPosition = this.statements.getNextQueuePosition.get().next;
+      log.info(`Descarga agregada: ${download.title} (pos: ${nextPosition})`);
 
-        try {
-            this.statements.insertDownload.run({
-                id: download.id,
-                title: download.title,
-                url: download.url || null,
-                savePath: download.savePath || null,
-                downloadPath: download.downloadPath || null,
-                preserveStructure: download.preserveStructure ? 1 : 0,
-                state: download.state || DownloadState.QUEUED,
-                progress: download.progress || 0,
-                downloadedBytes: download.downloadedBytes || 0,
-                totalBytes: download.totalBytes || 0,
-                priority: download.priority ?? DownloadPriority.NORMAL,
-                forceOverwrite: download.forceOverwrite ? 1 : 0,
-                createdAt: now,
-                updatedAt: now,
-                queuePosition: nextPosition
-            });
+      return this.getById(download.id);
+    } catch (error) {
+      log.error('Error agregando descarga:', error);
+      return null;
+    }
+  }
 
-            // Registrar en historial
-            this._logEvent(download.id, 'created', { title: download.title });
-
-            log.info(`Descarga agregada: ${download.title} (pos: ${nextPosition})`);
-
-            return this.getById(download.id);
-
-        } catch (error) {
-            log.error('Error agregando descarga:', error);
-            return null;
-        }
+  /**
+   * Actualiza una descarga existente
+   *
+   * Actualiza campos específicos de una descarga existente. Solo actualiza
+   * los campos proporcionados, manteniendo los demás sin cambios. Actualiza
+   * automáticamente el timestamp de updated_at.
+   *
+   * @param {number} id - ID de la descarga a actualizar
+   * @param {Object} updates - Campos a actualizar (todos opcionales)
+   * @param {string} [updates.state] - Nuevo estado
+   * @param {number} [updates.progress] - Progreso (0.0 - 1.0)
+   * @param {number} [updates.downloadedBytes] - Bytes descargados
+   * @param {number} [updates.totalBytes] - Tamaño total
+   * @param {string} [updates.url] - URL de descarga
+   * @param {string} [updates.savePath] - Ruta de guardado
+   * @param {number} [updates.startedAt] - Timestamp de inicio
+   * @param {number} [updates.completedAt] - Timestamp de completado
+   * @param {number} [updates.retryCount] - Número de reintentos
+   * @param {string} [updates.lastError] - Último mensaje de error
+   * @param {boolean} [updates.forceOverwrite] - Si forzar sobrescritura
+   * @returns {boolean} true si se actualizó correctamente, false si la descarga no existe o hubo error
+   *
+   * @example
+   * // Actualizar progreso de descarga
+   * const updated = queueDatabase.updateDownload(12345, {
+   *   progress: 0.75,
+   *   downloadedBytes: 75000000,
+   *   totalBytes: 100000000
+   * });
+   *
+   * // Actualizar estado y error
+   * queueDatabase.updateDownload(12345, {
+   *   state: 'failed',
+   *   lastError: 'Conexión perdida'
+   * });
+   */
+  updateDownload(id, updates) {
+    if (!this.exists(id)) {
+      log.warn(`updateDownload: Descarga ${id} no existe`);
+      return false;
     }
 
-    /**
-     * Actualiza una descarga existente
-     * @param {number} id - ID de la descarga
-     * @param {Object} updates - Campos a actualizar
-     * @returns {boolean} true si se actualizó
-     */
-    updateDownload(id, updates) {
-        if (!this.exists(id)) {
-            log.warn(`updateDownload: Descarga ${id} no existe`);
-            return false;
-        }
+    const now = Date.now();
 
-        const now = Date.now();
+    try {
+      this.statements.updateDownload.run({
+        id,
+        state: updates.state || null,
+        progress: updates.progress ?? null,
+        downloadedBytes: updates.downloadedBytes ?? null,
+        url: updates.url || null,
+        savePath: updates.savePath || null,
+        totalBytes: updates.totalBytes ?? null,
+        startedAt: updates.startedAt || null,
+        completedAt: updates.completedAt || null,
+        retryCount: updates.retryCount ?? null,
+        lastError: updates.lastError || null,
+        forceOverwrite:
+          updates.forceOverwrite !== undefined ? (updates.forceOverwrite ? 1 : 0) : null,
+        updatedAt: now,
+      });
 
-        try {
-            this.statements.updateDownload.run({
-                id,
-                state: updates.state || null,
-                progress: updates.progress ?? null,
-                downloadedBytes: updates.downloadedBytes ?? null,
-                url: updates.url || null,
-                savePath: updates.savePath || null,
-                totalBytes: updates.totalBytes ?? null,
-                startedAt: updates.startedAt || null,
-                completedAt: updates.completedAt || null,
-                retryCount: updates.retryCount ?? null,
-                lastError: updates.lastError || null,
-                forceOverwrite: updates.forceOverwrite !== undefined ? (updates.forceOverwrite ? 1 : 0) : null,
-                updatedAt: now
-            });
+      return true;
+    } catch (error) {
+      log.error('Error actualizando descarga:', error);
+      return false;
+    }
+  }
 
-            return true;
-
-        } catch (error) {
-            log.error('Error actualizando descarga:', error);
-            return false;
-        }
+  /**
+   * Actualiza solo el estado de una descarga
+   * @param {number} id - ID de la descarga
+   * @param {string} state - Nuevo estado
+   * @param {Object} [extra] - Datos adicionales para el evento
+   * @returns {boolean} true si se actualizó
+   */
+  setState(id, state, extra = {}) {
+    if (!Object.values(DownloadState).includes(state)) {
+      log.error(`Estado inválido: ${state}`);
+      return false;
     }
 
-    /**
-     * Actualiza solo el estado de una descarga
-     * @param {number} id - ID de la descarga
-     * @param {string} state - Nuevo estado
-     * @param {Object} [extra] - Datos adicionales para el evento
-     * @returns {boolean} true si se actualizó
-     */
-    setState(id, state, extra = {}) {
-        if (!Object.values(DownloadState).includes(state)) {
-            log.error(`Estado inválido: ${state}`);
-            return false;
-        }
+    try {
+      const result = this.statements.updateState.run({
+        id,
+        state,
+        updatedAt: Date.now(),
+      });
 
-        try {
-            const result = this.statements.updateState.run({
-                id,
-                state,
-                updatedAt: Date.now()
-            });
+      if (result.changes > 0) {
+        this._logEvent(id, `state_${state}`, extra);
+        log.debug(`Estado actualizado: ${id} -> ${state}`);
+        return true;
+      }
 
-            if (result.changes > 0) {
-                this._logEvent(id, `state_${state}`, extra);
-                log.debug(`Estado actualizado: ${id} -> ${state}`);
-                return true;
-            }
-
-            return false;
-
-        } catch (error) {
-            log.error('Error actualizando estado:', error);
-            return false;
-        }
+      return false;
+    } catch (error) {
+      log.error('Error actualizando estado:', error);
+      return false;
     }
+  }
 
-    /**
-     * Actualiza el progreso de una descarga (llamada frecuente, optimizada)
-     * @param {number} id - ID de la descarga
-     * @param {number} progress - Progreso (0.0 - 1.0)
-     * @param {number} downloadedBytes - Bytes descargados
-     */
-    updateProgress(id, progress, downloadedBytes) {
-        try {
-            this.statements.updateProgress.run({
-                id,
-                progress,
-                downloadedBytes,
-                updatedAt: Date.now()
-            });
-        } catch (error) {
-            // No loguear errores frecuentes de progreso
-        }
+  /**
+   * Actualiza el progreso de una descarga (llamada frecuente, optimizada)
+   *
+   * Método optimizado para actualizar solo el progreso y bytes descargados,
+   * usado frecuentemente durante descargas activas. Usa un prepared statement
+   * especializado para mejor rendimiento. No loguea errores para evitar spam.
+   *
+   * @param {number} id - ID de la descarga a actualizar
+   * @param {number} progress - Progreso actual (0.0 - 1.0)
+   * @param {number} downloadedBytes - Bytes descargados hasta el momento
+   * @returns {void}
+   *
+   * @example
+   * // Actualizar progreso durante descarga (llamado frecuentemente)
+   * queueDatabase.updateProgress(12345, 0.5, 50000000);
+   * // Progreso: 50%, bytes descargados: 50MB
+   *
+   * // Actualizar progreso avanzado
+   * queueDatabase.updateProgress(12345, 0.875, 87500000);
+   * // Progreso: 87.5%, bytes descargados: 87.5MB
+   */
+  updateProgress(id, progress, downloadedBytes) {
+    try {
+      this.statements.updateProgress.run({
+        id,
+        progress,
+        downloadedBytes,
+        updatedAt: Date.now(),
+      });
+    } catch (error) {
+      // No loguear errores frecuentes de progreso
     }
+  }
 
-    /**
-     * Obtiene una descarga por ID
-     * @param {number} id - ID de la descarga
-     * @returns {Object|null} La descarga o null
-     */
-    getById(id) {
-        const row = this.statements.getById.get(id);
-        return row ? this._rowToDownload(row) : null;
+  /**
+   * Obtiene una descarga por ID
+   *
+   * Busca una descarga específica por su ID único. Retorna todos los campos
+   * de la descarga incluyendo estado, progreso, metadatos, y timestamps.
+   *
+   * @param {number} id - ID único de la descarga a buscar
+   * @returns {DownloadRecord|null} Descarga encontrada con todos los campos, o null si no existe
+   *
+   * @example
+   * // Obtener descarga por ID
+   * const download = queueDatabase.getById(12345);
+   * if (download) {
+   *   console.log(`Descarga: ${download.title}`);
+   *   console.log(`Estado: ${download.state}`);
+   *   console.log(`Progreso: ${(download.progress * 100).toFixed(1)}%`);
+   *   console.log(`Bytes: ${download.downloaded_bytes}/${download.total_bytes}`);
+   * } else {
+   *   console.log('Descarga no encontrada');
+   * }
+   */
+  getById(id) {
+    const row = this.statements.getById.get(id);
+    return row ? this._rowToDownload(row) : null;
+  }
+
+  /**
+   * Verifica si existe una descarga en la base de datos
+   *
+   * Comprobación rápida usando un prepared statement optimizado que solo
+   * retorna si existe el registro, sin cargar todos los datos.
+   *
+   * @param {number} id - ID único de la descarga a verificar
+   * @returns {boolean} true si la descarga existe, false en caso contrario
+   *
+   * @example
+   * // Verificar existencia antes de agregar
+   * if (!queueDatabase.exists(12345)) {
+   *   queueDatabase.addDownload({ id: 12345, title: 'archivo.zip' });
+   * } else {
+   *   console.log('Descarga ya existe');
+   * }
+   */
+  exists(id) {
+    return !!this.statements.exists.get(id);
+  }
+
+  /**
+   * Elimina una descarga de la base de datos
+   *
+   * Elimina una descarga y todos sus datos asociados: chunks, historial,
+   * y registros relacionados. La eliminación se hace en cascada gracias a
+   * las foreign keys con ON DELETE CASCADE.
+   *
+   * @param {number} id - ID único de la descarga a eliminar
+   * @returns {boolean} true si se eliminó correctamente, false si no existía o hubo error
+   *
+   * @example
+   * // Eliminar descarga cancelada o completada
+   * const deleted = queueDatabase.deleteDownload(12345);
+   * if (deleted) {
+   *   console.log('Descarga eliminada de la base de datos');
+   *   // También se eliminaron automáticamente:
+   *   // - Todos los chunks asociados
+   *   // - Todo el historial de eventos
+   * }
+   */
+  deleteDownload(id) {
+    try {
+      // Primero eliminar chunks
+      this.statements.deleteChunks.run(id);
+
+      // Luego la descarga (el historial se elimina en cascada)
+      const result = this.statements.deleteDownload.run(id);
+
+      if (result.changes > 0) {
+        log.info(`Descarga eliminada: ${id}`);
+        return true;
+      }
+
+      return false;
+    } catch (error) {
+      log.error('Error eliminando descarga:', error);
+      return false;
     }
+  }
 
-    /**
-     * Verifica si existe una descarga
-     * @param {number} id - ID de la descarga
-     * @returns {boolean}
-     */
-    exists(id) {
-        return !!this.statements.exists.get(id);
-    }
+  // =====================
+  // QUERIES DE COLA
+  // =====================
 
-    /**
-     * Elimina una descarga
-     * @param {number} id - ID de la descarga
-     * @returns {boolean} true si se eliminó
-     */
-    deleteDownload(id) {
-        try {
-            // Primero eliminar chunks
-            this.statements.deleteChunks.run(id);
+  /**
+   * Obtiene todas las descargas en cola ordenadas por prioridad
+   *
+   * Retorna todas las descargas con estado 'queued', ordenadas por:
+   * 1. Prioridad (descendente - mayor prioridad primero)
+   * 2. Posición en cola (ascendente)
+   *
+   * @returns {Array<DownloadRecord>} Lista de descargas en cola ordenadas
+   *
+   * @example
+   * // Obtener todas las descargas en cola
+   * const queued = queueDatabase.getQueued();
+   * console.log(`Hay ${queued.length} descargas en cola`);
+   *
+   * // Mostrar descargas ordenadas por prioridad
+   * queued.forEach((download, index) => {
+   *   console.log(`${index + 1}. ${download.title} (prioridad: ${download.priority})`);
+   * });
+   */
+  getQueued() {
+    return this.statements.getQueued.all().map(r => this._rowToDownload(r));
+  }
 
-            // Luego la descarga (el historial se elimina en cascada)
-            const result = this.statements.deleteDownload.run(id);
+  /**
+   * Obtiene las descargas activas (en progreso)
+   * @returns {Array} Lista de descargas activas
+   */
+  getActive() {
+    return this.statements.getActive.all().map(r => this._rowToDownload(r));
+  }
 
-            if (result.changes > 0) {
-                log.info(`Descarga eliminada: ${id}`);
-                return true;
-            }
+  /**
+   * Obtiene las descargas pausadas
+   * Filtra descargas que están realmente completadas (tienen completed_at o progreso >= 1.0)
+   * @returns {Array} Lista de descargas pausadas (excluyendo completadas)
+   */
+  getPaused() {
+    const paused = this.statements.getPaused.all().map(r => this._rowToDownload(r));
 
-            return false;
+    // Filtrar descargas que están realmente completadas pero mal etiquetadas como pausadas
+    return paused.filter(download => {
+      // Si tiene completed_at, está completada, no pausada
+      if (download.completedAt) {
+        return false;
+      }
+      // Si el progreso es >= 1.0 (100%), está completada
+      if (
+        download.progress !== null &&
+        download.progress !== undefined &&
+        download.progress >= 1.0
+      ) {
+        return false;
+      }
+      return true;
+    });
+  }
 
-        } catch (error) {
-            log.error('Error eliminando descarga:', error);
-            return false;
-        }
-    }
+  /**
+   * Limpia descargas mal etiquetadas: corrige estados incorrectos de descargas "paused"
+   * @param {number} maxAgeDays - Máxima antigüedad en días para considerar una descarga como "antigua" (default: 7)
+   * @returns {Object} Estadísticas de la limpieza
+   */
+  cleanupMislabeledDownloads(maxAgeDays = 7) {
+    try {
+      const now = Date.now();
+      const maxAge = maxAgeDays * 24 * 60 * 60 * 1000; // Convertir días a milisegundos
+      const cutoffDate = now - maxAge;
 
-    // =====================
-    // QUERIES DE COLA
-    // =====================
+      let totalCorrected = 0;
+      let completedCorrected = 0;
+      let failedCorrected = 0;
+      let cancelledCorrected = 0;
+      let oldCleaned = 0;
 
-    /**
-     * Obtiene todas las descargas en cola
-     * @returns {Array} Lista de descargas ordenadas por prioridad
-     */
-    getQueued() {
-        return this.statements.getQueued.all().map(r => this._rowToDownload(r));
-    }
-
-    /**
-     * Obtiene las descargas activas (en progreso)
-     * @returns {Array} Lista de descargas activas
-     */
-    getActive() {
-        return this.statements.getActive.all().map(r => this._rowToDownload(r));
-    }
-
-    /**
-     * Obtiene las descargas pausadas
-     * Filtra descargas que están realmente completadas (tienen completed_at o progreso >= 1.0)
-     * @returns {Array} Lista de descargas pausadas (excluyendo completadas)
-     */
-    getPaused() {
-        const paused = this.statements.getPaused.all().map(r => this._rowToDownload(r));
-        
-        // Filtrar descargas que están realmente completadas pero mal etiquetadas como pausadas
-        return paused.filter(download => {
-            // Si tiene completed_at, está completada, no pausada
-            if (download.completedAt) {
-                return false;
-            }
-            // Si el progreso es >= 1.0 (100%), está completada
-            if (download.progress !== null && download.progress !== undefined && download.progress >= 1.0) {
-                return false;
-            }
-            return true;
-        });
-    }
-
-    /**
-     * Limpia descargas mal etiquetadas: corrige estados incorrectos de descargas "paused"
-     * @param {number} maxAgeDays - Máxima antigüedad en días para considerar una descarga como "antigua" (default: 7)
-     * @returns {Object} Estadísticas de la limpieza
-     */
-    cleanupMislabeledDownloads(maxAgeDays = 7) {
-        try {
-            const now = Date.now();
-            const maxAge = maxAgeDays * 24 * 60 * 60 * 1000; // Convertir días a milisegundos
-            const cutoffDate = now - maxAge;
-            
-            let totalCorrected = 0;
-            let completedCorrected = 0;
-            let failedCorrected = 0;
-            let cancelledCorrected = 0;
-            let oldCleaned = 0;
-            
-            // 1. Buscar descargas "paused" que están realmente completadas
-            const completedStmt = this.db.prepare(`
+      // 1. Buscar descargas "paused" que están realmente completadas
+      const completedStmt = this.db.prepare(`
                 SELECT id, progress, completed_at 
                 FROM downloads 
                 WHERE state = 'paused' 
                 AND (completed_at IS NOT NULL OR (progress IS NOT NULL AND progress >= 1.0))
             `);
-            const completed = completedStmt.all();
-            
-            // 2. Buscar descargas "paused" que tienen errores (deberían ser "failed")
-            const failedStmt = this.db.prepare(`
+      const completed = completedStmt.all();
+
+      // 2. Buscar descargas "paused" que tienen errores (deberían ser "failed")
+      const failedStmt = this.db.prepare(`
                 SELECT id, last_error 
                 FROM downloads 
                 WHERE state = 'paused' 
@@ -729,10 +922,10 @@ class QueueDatabase {
                 AND last_error != ''
                 AND (completed_at IS NULL AND (progress IS NULL OR progress < 1.0))
             `);
-            const failed = failedStmt.all();
-            
-            // 3. Buscar descargas "paused" muy antiguas sin progreso (probablemente canceladas/abandonadas)
-            const oldStmt = this.db.prepare(`
+      const failed = failedStmt.all();
+
+      // 3. Buscar descargas "paused" muy antiguas sin progreso (probablemente canceladas/abandonadas)
+      const oldStmt = this.db.prepare(`
                 SELECT id, created_at, updated_at, progress, downloaded_bytes, total_bytes
                 FROM downloads 
                 WHERE state = 'paused' 
@@ -742,12 +935,12 @@ class QueueDatabase {
                 AND (completed_at IS NULL)
                 AND (last_error IS NULL OR last_error = '')
             `);
-            const oldPaused = oldStmt.all(cutoffDate);
-            
-            // 4. Buscar descargas "paused" extremadamente antiguas (más de 30 días) sin importar progreso
-            // Estas probablemente fueron abandonadas cuando el usuario limpió la lista del frontend
-            const veryOldCutoff = now - (30 * 24 * 60 * 60 * 1000); // 30 días
-            const veryOldStmt = this.db.prepare(`
+      const oldPaused = oldStmt.all(cutoffDate);
+
+      // 4. Buscar descargas "paused" extremadamente antiguas (más de 30 días) sin importar progreso
+      // Estas probablemente fueron abandonadas cuando el usuario limpió la lista del frontend
+      const veryOldCutoff = now - 30 * 24 * 60 * 60 * 1000; // 30 días
+      const veryOldStmt = this.db.prepare(`
                 SELECT id, created_at, updated_at, progress
                 FROM downloads 
                 WHERE state = 'paused' 
@@ -756,634 +949,740 @@ class QueueDatabase {
                 AND (last_error IS NULL OR last_error = '')
                 AND (progress IS NULL OR progress < 1.0)
             `);
-            const veryOldPaused = veryOldStmt.all(veryOldCutoff);
-            
-            log.info(`Limpieza de descargas mal etiquetadas: ${completed.length} completadas, ${failed.length} fallidas, ${oldPaused.length} antiguas sin progreso, ${veryOldPaused.length} muy antiguas (30+ días)`);
-            
-            // Actualizar descargas completadas
-            if (completed.length > 0) {
-                const updateStmt = this.db.prepare(`
+      const veryOldPaused = veryOldStmt.all(veryOldCutoff);
+
+      log.info(
+        `Limpieza de descargas mal etiquetadas: ${completed.length} completadas, ${failed.length} fallidas, ${oldPaused.length} antiguas sin progreso, ${veryOldPaused.length} muy antiguas (30+ días)`
+      );
+
+      // Actualizar descargas completadas
+      if (completed.length > 0) {
+        const updateStmt = this.db.prepare(`
                     UPDATE downloads 
                     SET state = ?, updated_at = ?
                     WHERE id = ?
                 `);
-                
-                for (const download of completed) {
-                    try {
-                        updateStmt.run(DownloadState.COMPLETED, now, download.id);
-                        completedCorrected++;
-                        totalCorrected++;
-                    } catch (error) {
-                        log.warn(`Error corrigiendo descarga completada ${download.id}:`, error.message);
-                    }
-                }
-            }
-            
-            // Actualizar descargas fallidas
-            if (failed.length > 0) {
-                const updateStmt = this.db.prepare(`
+
+        for (const download of completed) {
+          try {
+            updateStmt.run(DownloadState.COMPLETED, now, download.id);
+            completedCorrected++;
+            totalCorrected++;
+          } catch (error) {
+            log.warn(`Error corrigiendo descarga completada ${download.id}:`, error.message);
+          }
+        }
+      }
+
+      // Actualizar descargas fallidas
+      if (failed.length > 0) {
+        const updateStmt = this.db.prepare(`
                     UPDATE downloads 
                     SET state = ?, updated_at = ?
                     WHERE id = ?
                 `);
-                
-                for (const download of failed) {
-                    try {
-                        updateStmt.run(DownloadState.FAILED, now, download.id);
-                        failedCorrected++;
-                        totalCorrected++;
-                    } catch (error) {
-                        log.warn(`Error corrigiendo descarga fallida ${download.id}:`, error.message);
-                    }
-                }
-            }
-            
-            // Limpiar descargas muy antiguas sin progreso (marcarlas como canceladas o eliminarlas)
-            if (oldPaused.length > 0) {
-                const updateStmt = this.db.prepare(`
+
+        for (const download of failed) {
+          try {
+            updateStmt.run(DownloadState.FAILED, now, download.id);
+            failedCorrected++;
+            totalCorrected++;
+          } catch (error) {
+            log.warn(`Error corrigiendo descarga fallida ${download.id}:`, error.message);
+          }
+        }
+      }
+
+      // Limpiar descargas muy antiguas sin progreso (marcarlas como canceladas o eliminarlas)
+      if (oldPaused.length > 0) {
+        const updateStmt = this.db.prepare(`
                     UPDATE downloads 
                     SET state = ?, updated_at = ?
                     WHERE id = ?
                 `);
-                
-                for (const download of oldPaused) {
-                    try {
-                        // Marcar como cancelada si es muy antigua y no tiene progreso
-                        updateStmt.run(DownloadState.CANCELLED, now, download.id);
-                        cancelledCorrected++;
-                        totalCorrected++;
-                        oldCleaned++;
-                    } catch (error) {
-                        log.warn(`Error limpiando descarga antigua ${download.id}:`, error.message);
-                    }
-                }
-            }
-            
-            // Limpiar descargas extremadamente antiguas (30+ días) - probablemente abandonadas
-            if (veryOldPaused.length > 0) {
-                const updateStmt = this.db.prepare(`
+
+        for (const download of oldPaused) {
+          try {
+            // Marcar como cancelada si es muy antigua y no tiene progreso
+            updateStmt.run(DownloadState.CANCELLED, now, download.id);
+            cancelledCorrected++;
+            totalCorrected++;
+            oldCleaned++;
+          } catch (error) {
+            log.warn(`Error limpiando descarga antigua ${download.id}:`, error.message);
+          }
+        }
+      }
+
+      // Limpiar descargas extremadamente antiguas (30+ días) - probablemente abandonadas
+      if (veryOldPaused.length > 0) {
+        const updateStmt = this.db.prepare(`
                     UPDATE downloads 
                     SET state = ?, updated_at = ?
                     WHERE id = ?
                 `);
-                
-                for (const download of veryOldPaused) {
-                    try {
-                        // Marcar como cancelada si es extremadamente antigua
-                        updateStmt.run(DownloadState.CANCELLED, now, download.id);
-                        cancelledCorrected++;
-                        totalCorrected++;
-                        oldCleaned++;
-                    } catch (error) {
-                        log.warn(`Error limpiando descarga muy antigua ${download.id}:`, error.message);
-                    }
-                }
-            }
-            
-            if (totalCorrected > 0) {
-                log.info(`Limpieza completada: ${completedCorrected} completadas, ${failedCorrected} fallidas, ${cancelledCorrected} canceladas (${oldCleaned} antiguas sin progreso)`);
-            }
-            
-            return { 
-                corrected: totalCorrected, 
-                completed: completedCorrected,
-                failed: failedCorrected,
-                cancelled: cancelledCorrected,
-                oldCleaned: oldCleaned,
-                total: completed.length + failed.length + oldPaused.length + veryOldPaused.length
-            };
-            
-        } catch (error) {
-            log.error('Error en limpieza de descargas mal etiquetadas:', error);
-            return { corrected: 0, total: 0, error: error.message };
+
+        for (const download of veryOldPaused) {
+          try {
+            // Marcar como cancelada si es extremadamente antigua
+            updateStmt.run(DownloadState.CANCELLED, now, download.id);
+            cancelledCorrected++;
+            totalCorrected++;
+            oldCleaned++;
+          } catch (error) {
+            log.warn(`Error limpiando descarga muy antigua ${download.id}:`, error.message);
+          }
         }
+      }
+
+      if (totalCorrected > 0) {
+        log.info(
+          `Limpieza completada: ${completedCorrected} completadas, ${failedCorrected} fallidas, ${cancelledCorrected} canceladas (${oldCleaned} antiguas sin progreso)`
+        );
+      }
+
+      return {
+        corrected: totalCorrected,
+        completed: completedCorrected,
+        failed: failedCorrected,
+        cancelled: cancelledCorrected,
+        oldCleaned: oldCleaned,
+        total: completed.length + failed.length + oldPaused.length + veryOldPaused.length,
+      };
+    } catch (error) {
+      log.error('Error en limpieza de descargas mal etiquetadas:', error);
+      return { corrected: 0, total: 0, error: error.message };
+    }
+  }
+
+  /**
+   * Obtiene descargas por estado
+   * @param {string} state - Estado a buscar
+   * @returns {Array} Lista de descargas
+   */
+  getByState(state) {
+    const stmt = this.db.prepare('SELECT * FROM downloads WHERE state = ?');
+    return stmt.all(state).map(r => this._rowToDownload(r));
+  }
+
+  /**
+   * Obtiene el historial de descargas completadas/fallidas
+   * @param {number} limit - Límite de resultados
+   * @returns {Array} Lista de descargas
+   */
+  getHistory(limit = 100) {
+    return this.statements.getHistory.all(limit).map(r => this._rowToDownload(r));
+  }
+
+  /**
+   * Obtiene todas las descargas para la UI
+   * @returns {Array} Lista completa ordenada
+   */
+  getAll() {
+    return this.statements.getAll.all().map(r => this._rowToDownload(r));
+  }
+
+  /**
+   * Obtiene la siguiente descarga en cola para iniciar
+   * @returns {Object|null} La siguiente descarga o null
+   */
+  getNext() {
+    const queued = this.getQueued();
+    return queued.length > 0 ? queued[0] : null;
+  }
+
+  /**
+   * Cuenta descargas por estado
+   * @returns {Object} Conteos por estado
+   */
+  getCounts() {
+    const rows = this.statements.countByState.all();
+    const counts = {
+      total: 0,
+      queued: 0,
+      downloading: 0,
+      paused: 0,
+      completed: 0,
+      failed: 0,
+      cancelled: 0,
+      awaiting: 0,
+    };
+
+    rows.forEach(row => {
+      counts[row.state] = row.count;
+      counts.total += row.count;
+    });
+
+    return counts;
+  }
+
+  // =====================
+  // OPERACIONES DE COLA
+  // =====================
+
+  /**
+   * Marca una descarga como iniciada
+   *
+   * Actualiza el estado de una descarga a 'downloading' y registra información
+   * inicial como URL, ruta de guardado, tamaño total, etc. Registra el evento
+   * 'started' en el historial.
+   *
+   * @param {number} id - ID de la descarga a iniciar
+   * @param {Object} [info={}] - Información adicional de la descarga iniciada
+   * @param {string} [info.url] - URL completa de descarga
+   * @param {string} [info.savePath] - Ruta donde se guardará el archivo
+   * @param {number} [info.totalBytes] - Tamaño total del archivo en bytes
+   * @param {number} [info.downloadedBytes=0] - Bytes ya descargados (para reanudación)
+   * @param {number} [info.progress=0] - Progreso inicial (0.0 - 1.0)
+   * @returns {boolean} true si se actualizó correctamente, false si hubo error
+   *
+   * @example
+   * // Iniciar descarga simple
+   * queueDatabase.startDownload(12345, {
+   *   url: 'https://myrient.erista.me/files/archivo.zip',
+   *   savePath: 'C:/Downloads/archivo.zip',
+   *   totalBytes: 100000000,
+   *   downloadedBytes: 0,
+   *   progress: 0
+   * });
+   *
+   * // Iniciar descarga fragmentada
+   * queueDatabase.startDownload(12345, {
+   *   url: 'https://myrient.erista.me/files/large.zip',
+   *   savePath: 'C:/Downloads/large.zip',
+   *   totalBytes: 1000000000,
+   *   isChunked: true // Se almacena en metadata si es necesario
+   * });
+   */
+  startDownload(id, info = {}) {
+    const now = Date.now();
+
+    try {
+      // Obtener datos actuales para preservar forceOverwrite
+      const download = this.getById(id);
+
+      this.statements.updateDownload.run({
+        id,
+        state: DownloadState.DOWNLOADING,
+        progress: info.progress || 0,
+        downloadedBytes: info.downloadedBytes || 0,
+        totalBytes: info.totalBytes || null,
+        savePath: info.savePath || null,
+        url: info.url || null,
+        startedAt: now,
+        completedAt: null,
+        retryCount: null,
+        lastError: null,
+        forceOverwrite:
+          download?.forceOverwrite !== undefined ? (download.forceOverwrite ? 1 : 0) : null,
+        updatedAt: now,
+      });
+
+      this._logEvent(id, 'started', info);
+      log.info(`Descarga iniciada: ${id}`);
+
+      return true;
+    } catch (error) {
+      log.error('Error iniciando descarga:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Marca una descarga como pausada
+   *
+   * Cambia el estado de una descarga a 'paused'. Los archivos parciales se
+   * mantienen para permitir reanudación posterior. Registra el evento 'paused'
+   * en el historial.
+   *
+   * @param {number} id - ID de la descarga a pausar
+   * @returns {boolean} true si se actualizó correctamente, false si hubo error
+   *
+   * @example
+   * // Pausar descarga activa
+   * const paused = queueDatabase.pauseDownload(12345);
+   * if (paused) {
+   *   console.log('Descarga pausada');
+   *   // Los archivos parciales se mantienen para reanudación
+   * }
+   */
+  pauseDownload(id) {
+    return this.setState(id, DownloadState.PAUSED);
+  }
+
+  /**
+   * Reanuda una descarga pausada (vuelve a queued)
+   * @param {number} id - ID de la descarga
+   * @returns {boolean}
+   */
+  resumeDownload(id) {
+    const download = this.getById(id);
+    if (!download) return false;
+
+    if (download.state !== DownloadState.PAUSED) {
+      log.warn(`No se puede reanudar descarga en estado ${download.state}`);
+      return false;
     }
 
-    /**
-     * Obtiene descargas por estado
-     * @param {string} state - Estado a buscar
-     * @returns {Array} Lista de descargas
-     */
-    getByState(state) {
-        const stmt = this.db.prepare('SELECT * FROM downloads WHERE state = ?');
-        return stmt.all(state).map(r => this._rowToDownload(r));
+    return this.setState(id, DownloadState.QUEUED, { resumed: true });
+  }
+
+  /**
+   * Marca una descarga como completada
+   *
+   * Actualiza el estado de una descarga a 'completed', establece el progreso
+   * a 1.0, y registra el timestamp de completado. Registra el evento 'completed'
+   * en el historial con información adicional como duración.
+   *
+   * @param {number} id - ID de la descarga completada
+   * @param {Object} [info={}] - Información adicional del completado
+   * @param {string} [info.savePath] - Ruta final donde se guardó el archivo
+   * @param {number} [info.duration] - Duración de la descarga en segundos
+   * @returns {boolean} true si se actualizó correctamente, false si hubo error
+   *
+   * @example
+   * // Completar descarga simple
+   * const completed = queueDatabase.completeDownload(12345, {
+   *   savePath: 'C:/Downloads/archivo.zip',
+   *   duration: 125.5 // segundos
+   * });
+   *
+   * // Completar descarga fragmentada
+   * queueDatabase.completeDownload(12345, {
+   *   savePath: 'C:/Downloads/large.zip',
+   *   duration: 3600,
+   *   isChunked: true
+   * });
+   */
+  completeDownload(id, info = {}) {
+    const now = Date.now();
+
+    try {
+      // Obtener datos actuales para preservar bytes y forceOverwrite
+      const download = this.getById(id);
+
+      // IMPORTANTE: El prepared statement requiere TODOS los parámetros
+      this.statements.updateDownload.run({
+        id,
+        state: DownloadState.COMPLETED,
+        progress: 1.0,
+        downloadedBytes: download?.downloaded_bytes || download?.total_bytes || null,
+        totalBytes: download?.total_bytes || null,
+        savePath: info.savePath || download?.save_path || null,
+        url: null,
+        startedAt: null,
+        completedAt: now,
+        retryCount: null,
+        lastError: null,
+        forceOverwrite:
+          download?.forceOverwrite !== undefined ? (download.forceOverwrite ? 1 : 0) : null,
+        updatedAt: now,
+      });
+
+      this._logEvent(id, 'completed', info);
+      log.info(`Descarga completada: ${id}`);
+
+      return true;
+    } catch (error) {
+      log.error('Error completando descarga:', error);
+      return false;
     }
+  }
 
-    /**
-     * Obtiene el historial de descargas completadas/fallidas
-     * @param {number} limit - Límite de resultados
-     * @returns {Array} Lista de descargas
-     */
-    getHistory(limit = 100) {
-        return this.statements.getHistory.all(limit).map(r => this._rowToDownload(r));
-    }
+  /**
+   * Marca una descarga como fallida o programa reintento
+   *
+   * Incrementa el contador de reintentos. Si no ha excedido el máximo de reintentos,
+   * vuelve a poner la descarga en estado 'queued' para reintento automático. Si ya
+   * excedió el máximo, marca como 'failed' definitivamente. Registra el error y
+   * el evento correspondiente en el historial.
+   *
+   * @param {number} id - ID de la descarga que falló
+   * @param {string} error - Mensaje de error descriptivo
+   * @returns {boolean} true si se actualizó correctamente, false si la descarga no existe o hubo error
+   *
+   * @example
+   * // Primera falla - se reintentará
+   * queueDatabase.failDownload(12345, 'Conexión perdida');
+   * // Estado: 'queued', retryCount: 1
+   *
+   * // Después de varios reintentos fallidos - se marca como failed
+   * queueDatabase.failDownload(12345, 'Timeout después de 3 reintentos');
+   * // Estado: 'failed', retryCount: 3, lastError: 'Timeout...'
+   */
+  failDownload(id, error) {
+    try {
+      const download = this.getById(id);
+      if (!download) return false;
 
-    /**
-     * Obtiene todas las descargas para la UI
-     * @returns {Array} Lista completa ordenada
-     */
-    getAll() {
-        return this.statements.getAll.all().map(r => this._rowToDownload(r));
-    }
+      const retryCount = (download.retryCount || 0) + 1;
 
-    /**
-     * Obtiene la siguiente descarga en cola para iniciar
-     * @returns {Object|null} La siguiente descarga o null
-     */
-    getNext() {
-        const queued = this.getQueued();
-        return queued.length > 0 ? queued[0] : null;
-    }
-
-    /**
-     * Cuenta descargas por estado
-     * @returns {Object} Conteos por estado
-     */
-    getCounts() {
-        const rows = this.statements.countByState.all();
-        const counts = {
-            total: 0,
-            queued: 0,
-            downloading: 0,
-            paused: 0,
-            completed: 0,
-            failed: 0,
-            cancelled: 0,
-            awaiting: 0
-        };
-
-        rows.forEach(row => {
-            counts[row.state] = row.count;
-            counts.total += row.count;
-        });
-
-        return counts;
-    }
-
-    // =====================
-    // OPERACIONES DE COLA
-    // =====================
-
-    /**
-     * Marca una descarga como iniciada
-     * @param {number} id - ID de la descarga
-     * @param {Object} [info] - Info adicional (url, totalBytes, etc.)
-     * @returns {boolean}
-     */
-    startDownload(id, info = {}) {
-        const now = Date.now();
-
-        try {
-            this.statements.updateDownload.run({
-                id,
-                state: DownloadState.DOWNLOADING,
-                progress: info.progress || 0,
-                downloadedBytes: info.downloadedBytes || 0,
-                totalBytes: info.totalBytes || null,
-                savePath: info.savePath || null,
-                url: info.url || null,
-                startedAt: now,
-                completedAt: null,
-                retryCount: null,
-                lastError: null,
-                updatedAt: now
-            });
-
-            this._logEvent(id, 'started', info);
-            log.info(`Descarga iniciada: ${id}`);
-
-            return true;
-
-        } catch (error) {
-            log.error('Error iniciando descarga:', error);
-            return false;
-        }
-    }
-
-    /**
-     * Marca una descarga como pausada
-     * @param {number} id - ID de la descarga
-     * @returns {boolean}
-     */
-    pauseDownload(id) {
-        return this.setState(id, DownloadState.PAUSED);
-    }
-
-    /**
-     * Reanuda una descarga pausada (vuelve a queued)
-     * @param {number} id - ID de la descarga
-     * @returns {boolean}
-     */
-    resumeDownload(id) {
-        const download = this.getById(id);
-        if (!download) return false;
-
-        if (download.state !== DownloadState.PAUSED) {
-            log.warn(`No se puede reanudar descarga en estado ${download.state}`);
-            return false;
-        }
-
-        return this.setState(id, DownloadState.QUEUED, { resumed: true });
-    }
-
-   /**
-     * Marca una descarga como completada
-     * @param {number} id - ID de la descarga
-     * @param {Object} [info] - Info adicional (savePath, etc.)
-     * @returns {boolean}
-     */
-    completeDownload(id, info = {}) {
-        const now = Date.now();
-
-        try {
-            // Obtener datos actuales para preservar bytes
-            const download = this.getById(id);
-            
-            // IMPORTANTE: El prepared statement requiere TODOS los parámetros
-            this.statements.updateDownload.run({
-                id,
-                state: DownloadState.COMPLETED,
-                progress: 1.0,
-                downloadedBytes: download?.downloaded_bytes || download?.total_bytes || null,
-                totalBytes: download?.total_bytes || null,
-                savePath: info.savePath || download?.save_path || null,
-                url: null,
-                startedAt: null,
-                completedAt: now,
-                retryCount: null,
-                lastError: null,
-                updatedAt: now
-            });
-
-            this._logEvent(id, 'completed', info);
-            log.info(`Descarga completada: ${id}`);
-
-            return true;
-
-        } catch (error) {
-            log.error('Error completando descarga:', error);
-            return false;
-        }
-    }
-
-    /**
-     * Marca una descarga como fallida
-     * @param {number} id - ID de la descarga
-     * @param {string} error - Mensaje de error
-     * @returns {boolean}
-     */
-    failDownload(id, error) {
-        try {
-            const download = this.getById(id);
-            if (!download) return false;
-
-            const retryCount = (download.retryCount || 0) + 1;
-
-            // Si no ha excedido reintentos, volver a encolar
-            if (retryCount < (download.maxRetries || 3)) {
-                this.statements.updateDownload.run({
-                    id,
-                    state: DownloadState.QUEUED,
-                    progress: null,
-                    downloadedBytes: null,
-                    totalBytes: null,
-                    savePath: null,
-                    url: null,
-                    startedAt: null,
-                    completedAt: null,
-                    retryCount,
-                    lastError: error,
-                    updatedAt: Date.now()
-                });
-
-                this._logEvent(id, 'retry', { attempt: retryCount, error });
-                log.info(`Descarga ${id} reintentará (${retryCount}/${download.maxRetries})`);
-
-                return true;
-            }
-
-            // Excedió reintentos, marcar como fallida
-                this.statements.updateDownload.run({
-                    id,
-                    state: DownloadState.FAILED,
-                    progress: null,
-                    downloadedBytes: null,
-                    totalBytes: null,
-                    savePath: null,
-                    url: null,
-                    startedAt: null,
-                    completedAt: null,
-                    retryCount,
-                    lastError: error,
-                    updatedAt: Date.now()
-                });
-
-            this._logEvent(id, 'failed', { error, attempts: retryCount });
-            log.error(`Descarga ${id} falló después de ${retryCount} intentos: ${error}`);
-
-            return true;
-
-        } catch (err) {
-            log.error('Error marcando descarga como fallida:', err);
-            return false;
-        }
-    }
-
-    /**
-     * Cancela una descarga
-     * @param {number} id - ID de la descarga
-     * @returns {boolean}
-     */
-    cancelDownload(id) {
-        return this.setState(id, DownloadState.CANCELLED);
-    }
-
-    /**
-     * Confirma sobrescritura de una descarga en estado awaiting
-     * Cambia el estado a queued y activa forceOverwrite
-     * @param {number} id - ID de la descarga
-     * @returns {boolean}
-     */
-    confirmOverwrite(id) {
-        const download = this.getById(id);
-        if (!download) return false;
-
-        // Permitir confirmar si está en 'awaiting', 'queued', 'paused' o 'completed' (completed puede ser desincronización)
-        // Si está en 'completed', cambiar a 'queued' y activar forceOverwrite para reiniciar
-        const validStates = [DownloadState.AWAITING, DownloadState.QUEUED, DownloadState.PAUSED, DownloadState.COMPLETED];
-        if (!validStates.includes(download.state)) {
-            log.warn(`No se puede confirmar sobrescritura de descarga en estado ${download.state}`);
-            return false;
-        }
-        
-        // Si está en 'completed', resetear progreso también
-        const resetProgress = download.state === DownloadState.COMPLETED;
-
-        // Cambiar a queued y activar forceOverwrite usando updateDownload con todos los parámetros
-        this.updateDownload(id, {
-            state: DownloadState.QUEUED,
-            forceOverwrite: true,
-            progress: resetProgress ? 0 : undefined,
-            downloadedBytes: resetProgress ? 0 : undefined,
-            completedAt: resetProgress ? null : undefined
-        });
-
-        this._logEvent(id, 'overwrite_confirmed', { manual: true });
-        log.info(`Sobrescritura confirmada para descarga ${id}`);
-        return true;
-    }
-
-    /**
-     * Reinicia una descarga cancelada o fallida
-     * Resetea el progreso y la coloca en cola
-     * @param {number} id - ID de la descarga
-     * @returns {boolean}
-     */
-    retryDownload(id) {
-        const download = this.getById(id);
-        if (!download) return false;
-
-        // NO permitir reiniciar descargas completadas
-        if (download.state === DownloadState.COMPLETED) {
-            log.warn(`No se puede reiniciar descarga en estado ${download.state}`);
-            return false;
-        }
-
-        // Solo reiniciar si está cancelada, fallida, awaiting o pausada
-        const validStates = [DownloadState.CANCELLED, DownloadState.FAILED, DownloadState.AWAITING, DownloadState.PAUSED];
-        if (!validStates.includes(download.state)) {
-            log.warn(`No se puede reiniciar descarga en estado ${download.state}`);
-            return false;
-        }
-
-        // Si está en estado awaiting o pausada (puede ser una descarga que estaba awaiting), activar forceOverwrite también
-        const forceOverwrite = (download.state === DownloadState.AWAITING || download.state === DownloadState.PAUSED) ? 1 : null;
-
-        // Resetear completamente: estado, progreso, bytes descargados, errores
+      // Si no ha excedido reintentos, volver a encolar
+      if (retryCount < (download.maxRetries || 3)) {
         this.statements.updateDownload.run({
-            id,
-            state: DownloadState.QUEUED,
-            progress: 0,
-            downloadedBytes: 0,
-            totalBytes: null, // Se actualizará cuando se reinicie
-            savePath: null, // Se actualizará cuando se reinicie
-            url: null, // Se actualizará cuando se reinicie
-            startedAt: null,
-            completedAt: null,
-            retryCount: 0, // Resetear contador de reintentos
-            lastError: null, // Limpiar error anterior
-            forceOverwrite: forceOverwrite, // Activar sobrescritura si estaba awaiting
-            updatedAt: Date.now()
+          id,
+          state: DownloadState.QUEUED,
+          progress: null,
+          downloadedBytes: null,
+          totalBytes: null,
+          savePath: null,
+          url: null,
+          startedAt: null,
+          completedAt: null,
+          retryCount,
+          lastError: error,
+          forceOverwrite:
+            download?.forceOverwrite !== undefined ? (download.forceOverwrite ? 1 : 0) : null,
+          updatedAt: Date.now(),
         });
 
-        this._logEvent(id, 'retry', { manual: true, wasAwaiting: download.state === DownloadState.AWAITING });
-        log.info(`Descarga ${id} reiniciada manualmente${download.state === DownloadState.AWAITING ? ' (con sobrescritura)' : ''}`);
+        this._logEvent(id, 'retry', { attempt: retryCount, error });
+        log.info(`Descarga ${id} reintentará (${retryCount}/${download.maxRetries})`);
+
         return true;
+      }
+
+      // Excedió reintentos, marcar como fallida
+      this.statements.updateDownload.run({
+        id,
+        state: DownloadState.FAILED,
+        progress: null,
+        downloadedBytes: null,
+        totalBytes: null,
+        savePath: null,
+        url: null,
+        startedAt: null,
+        completedAt: null,
+        retryCount,
+        lastError: error,
+        forceOverwrite:
+          download?.forceOverwrite !== undefined ? (download.forceOverwrite ? 1 : 0) : null,
+        updatedAt: Date.now(),
+      });
+
+      this._logEvent(id, 'failed', { error, attempts: retryCount });
+      log.error(`Descarga ${id} falló después de ${retryCount} intentos: ${error}`);
+
+      return true;
+    } catch (err) {
+      log.error('Error marcando descarga como fallida:', err);
+      return false;
+    }
+  }
+
+  /**
+   * Cancela una descarga
+   * @param {number} id - ID de la descarga
+   * @returns {boolean}
+   */
+  cancelDownload(id) {
+    return this.setState(id, DownloadState.CANCELLED);
+  }
+
+  /**
+   * Confirma sobrescritura de una descarga en estado awaiting
+   * Cambia el estado a queued y activa forceOverwrite
+   * @param {number} id - ID de la descarga
+   * @returns {boolean}
+   */
+  confirmOverwrite(id) {
+    const download = this.getById(id);
+    if (!download) return false;
+
+    // Permitir confirmar si está en 'awaiting', 'queued', 'paused' o 'completed' (completed puede ser desincronización)
+    // Si está en 'completed', cambiar a 'queued' y activar forceOverwrite para reiniciar
+    const validStates = [
+      DownloadState.AWAITING,
+      DownloadState.QUEUED,
+      DownloadState.PAUSED,
+      DownloadState.COMPLETED,
+    ];
+    if (!validStates.includes(download.state)) {
+      log.warn(`No se puede confirmar sobrescritura de descarga en estado ${download.state}`);
+      return false;
     }
 
-    // =====================
-    // CHUNKS (FRAGMENTOS)
-    // =====================
+    // Si está en 'completed', resetear progreso también
+    const resetProgress = download.state === DownloadState.COMPLETED;
 
-    /**
-     * Crea chunks para una descarga fragmentada
-     * @param {number} downloadId - ID de la descarga
-     * @param {number} totalBytes - Tamaño total del archivo
-     * @param {number} numChunks - Número de fragmentos
-     * @returns {Array} Lista de chunks creados
-     */
-    createChunks(downloadId, totalBytes, numChunks = 4) {
-        const chunkSize = Math.ceil(totalBytes / numChunks);
-        const now = Date.now();
-        const chunks = [];
+    // Cambiar a queued y activar forceOverwrite usando updateDownload con todos los parámetros
+    this.updateDownload(id, {
+      state: DownloadState.QUEUED,
+      forceOverwrite: true,
+      progress: resetProgress ? 0 : undefined,
+      downloadedBytes: resetProgress ? 0 : undefined,
+      completedAt: resetProgress ? null : undefined,
+    });
 
-        // Usar transacción para atomicidad
-        const transaction = this.db.transaction(() => {
-            for (let i = 0; i < numChunks; i++) {
-                const startByte = i * chunkSize;
-                const endByte = Math.min(startByte + chunkSize - 1, totalBytes - 1);
+    this._logEvent(id, 'overwrite_confirmed', { manual: true });
+    log.info(`Sobrescritura confirmada para descarga ${id}`);
+    return true;
+  }
 
-                this.statements.insertChunk.run({
-                    downloadId,
-                    chunkIndex: i,
-                    startByte,
-                    endByte,
-                    downloadedBytes: 0,
-                    state: 'pending',
-                    tempFile: null,
-                    createdAt: now,
-                    updatedAt: now
-                });
+  /**
+   * Reinicia una descarga cancelada o fallida
+   * Resetea el progreso y la coloca en cola
+   * @param {number} id - ID de la descarga
+   * @returns {boolean}
+   */
+  retryDownload(id) {
+    const download = this.getById(id);
+    if (!download) return false;
 
-                chunks.push({
-                    downloadId,
-                    chunkIndex: i,
-                    startByte,
-                    endByte,
-                    downloadedBytes: 0,
-                    state: 'pending'
-                });
-            }
+    // NO permitir reiniciar descargas completadas
+    if (download.state === DownloadState.COMPLETED) {
+      log.warn(`No se puede reiniciar descarga en estado ${download.state}`);
+      return false;
+    }
+
+    // Solo reiniciar si está cancelada, fallida, awaiting o pausada
+    const validStates = [
+      DownloadState.CANCELLED,
+      DownloadState.FAILED,
+      DownloadState.AWAITING,
+      DownloadState.PAUSED,
+    ];
+    if (!validStates.includes(download.state)) {
+      log.warn(`No se puede reiniciar descarga en estado ${download.state}`);
+      return false;
+    }
+
+    // Si está en estado awaiting o pausada (puede ser una descarga que estaba awaiting), activar forceOverwrite también
+    const forceOverwrite =
+      download.state === DownloadState.AWAITING || download.state === DownloadState.PAUSED
+        ? 1
+        : null;
+
+    // Resetear completamente: estado, progreso, bytes descargados, errores
+    this.statements.updateDownload.run({
+      id,
+      state: DownloadState.QUEUED,
+      progress: 0,
+      downloadedBytes: 0,
+      totalBytes: null, // Se actualizará cuando se reinicie
+      savePath: null, // Se actualizará cuando se reinicie
+      url: null, // Se actualizará cuando se reinicie
+      startedAt: null,
+      completedAt: null,
+      retryCount: 0, // Resetear contador de reintentos
+      lastError: null, // Limpiar error anterior
+      forceOverwrite: forceOverwrite, // Activar sobrescritura si estaba awaiting
+      updatedAt: Date.now(),
+    });
+
+    this._logEvent(id, 'retry', {
+      manual: true,
+      wasAwaiting: download.state === DownloadState.AWAITING,
+    });
+    log.info(
+      `Descarga ${id} reiniciada manualmente${download.state === DownloadState.AWAITING ? ' (con sobrescritura)' : ''}`
+    );
+    return true;
+  }
+
+  // =====================
+  // CHUNKS (FRAGMENTOS)
+  // =====================
+
+  /**
+   * Crea chunks para una descarga fragmentada
+   * @param {number} downloadId - ID de la descarga
+   * @param {number} totalBytes - Tamaño total del archivo
+   * @param {number} numChunks - Número de fragmentos
+   * @returns {Array} Lista de chunks creados
+   */
+  createChunks(downloadId, totalBytes, numChunks = 4) {
+    const chunkSize = Math.ceil(totalBytes / numChunks);
+    const now = Date.now();
+    const chunks = [];
+
+    // Usar transacción para atomicidad
+    const transaction = this.db.transaction(() => {
+      for (let i = 0; i < numChunks; i++) {
+        const startByte = i * chunkSize;
+        const endByte = Math.min(startByte + chunkSize - 1, totalBytes - 1);
+
+        this.statements.insertChunk.run({
+          downloadId,
+          chunkIndex: i,
+          startByte,
+          endByte,
+          downloadedBytes: 0,
+          state: 'pending',
+          tempFile: null,
+          createdAt: now,
+          updatedAt: now,
         });
 
-        transaction();
-        log.debug(`Creados ${numChunks} chunks para descarga ${downloadId}`);
-
-        return chunks;
-    }
-
-    /**
-     * Obtiene los chunks de una descarga
-     * @param {number} downloadId - ID de la descarga
-     * @returns {Array} Lista de chunks
-     */
-    getChunks(downloadId) {
-        return this.statements.getChunks.all(downloadId);
-    }
-
-    /**
-     * Actualiza un chunk (Block 2 - con soporte para temp_file)
-     * @param {number} downloadId - ID de la descarga
-     * @param {number} chunkIndex - Índice del chunk
-     * @param {Object} updates - Campos a actualizar (downloadedBytes, state, tempFile)
-     */
-    updateChunk(downloadId, chunkIndex, updates) {
-        try {
-            this.statements.updateChunk.run({
-                downloadId,
-                chunkIndex,
-                downloadedBytes: updates.downloadedBytes ?? null,
-                state: updates.state ?? null,
-                tempFile: updates.tempFile ?? null,
-                updatedAt: Date.now()
-            });
-        } catch (error) {
-            // Log solo si es un error real
-            if (error.message && !error.message.includes('no such')) {
-                log.error('Error actualizando chunk:', error.message);
-            }
-        }
-    }
-
-    // =====================
-    // LIMPIEZA Y UTILIDADES
-    // =====================
-
-    /**
-     * Limpia el historial de descargas antiguas
-     * @param {number} daysOld - Días de antigüedad
-     * @returns {number} Número de registros eliminados
-     */
-    cleanOldHistory(daysOld = 30) {
-        const cutoff = Date.now() - (daysOld * 24 * 60 * 60 * 1000);
-        const result = this.statements.cleanOldHistory.run(cutoff);
-        log.info(`Limpiados ${result.changes} registros antiguos`);
-        return result.changes;
-    }
-
-    /**
-     * Limpia todo el historial completado/fallido
-     * @returns {number} Número de registros eliminados
-     */
-    clearHistory() {
-        const result = this.statements.clearHistory.run();
-        log.info(`Historial limpiado: ${result.changes} registros`);
-        return result.changes;
-    }
-
-    /**
-     * Obtiene estadísticas generales
-     * @returns {Object} Estadísticas
-     */
-    getStats() {
-        const counts = this.getCounts();
-        const active = this.getActive();
-
-        let totalBytes = 0;
-        let downloadedBytes = 0;
-
-        active.forEach(d => {
-            totalBytes += d.totalBytes || 0;
-            downloadedBytes += d.downloadedBytes || 0;
+        chunks.push({
+          downloadId,
+          chunkIndex: i,
+          startByte,
+          endByte,
+          downloadedBytes: 0,
+          state: 'pending',
         });
+      }
+    });
 
-        return {
-            ...counts,
-            totalBytesActive: totalBytes,
-            downloadedBytesActive: downloadedBytes,
-            progressActive: totalBytes > 0 ? downloadedBytes / totalBytes : 0
-        };
+    transaction();
+    log.debug(`Creados ${numChunks} chunks para descarga ${downloadId}`);
+
+    return chunks;
+  }
+
+  /**
+   * Obtiene los chunks de una descarga
+   * @param {number} downloadId - ID de la descarga
+   * @returns {Array} Lista de chunks
+   */
+  getChunks(downloadId) {
+    return this.statements.getChunks.all(downloadId);
+  }
+
+  /**
+   * Actualiza un chunk (Block 2 - con soporte para temp_file)
+   * @param {number} downloadId - ID de la descarga
+   * @param {number} chunkIndex - Índice del chunk
+   * @param {Object} updates - Campos a actualizar (downloadedBytes, state, tempFile)
+   */
+  updateChunk(downloadId, chunkIndex, updates) {
+    try {
+      this.statements.updateChunk.run({
+        downloadId,
+        chunkIndex,
+        downloadedBytes: updates.downloadedBytes ?? null,
+        state: updates.state ?? null,
+        tempFile: updates.tempFile ?? null,
+        updatedAt: Date.now(),
+      });
+    } catch (error) {
+      // Log solo si es un error real
+      if (error.message && !error.message.includes('no such')) {
+        log.error('Error actualizando chunk:', error.message);
+      }
     }
+  }
 
-    /**
-     * Cierra la conexión a la base de datos
-     */
-    close() {
-        if (this.db) {
-            // Checkpoint WAL antes de cerrar
-            this.db.pragma('wal_checkpoint(TRUNCATE)');
-            this.db.close();
-            this.db = null;
-            this.statements = null;
-            this.isInitialized = false;
-            log.info('QueueDatabase cerrada');
-        }
+  // =====================
+  // LIMPIEZA Y UTILIDADES
+  // =====================
+
+  /**
+   * Limpia el historial de descargas antiguas
+   * @param {number} daysOld - Días de antigüedad
+   * @returns {number} Número de registros eliminados
+   */
+  cleanOldHistory(daysOld = 30) {
+    const cutoff = Date.now() - daysOld * 24 * 60 * 60 * 1000;
+    const result = this.statements.cleanOldHistory.run(cutoff);
+    log.info(`Limpiados ${result.changes} registros antiguos`);
+    return result.changes;
+  }
+
+  /**
+   * Limpia todo el historial completado/fallido
+   * @returns {number} Número de registros eliminados
+   */
+  clearHistory() {
+    const result = this.statements.clearHistory.run();
+    log.info(`Historial limpiado: ${result.changes} registros`);
+    return result.changes;
+  }
+
+  /**
+   * Obtiene estadísticas generales
+   * @returns {Object} Estadísticas
+   */
+  getStats() {
+    const counts = this.getCounts();
+    const active = this.getActive();
+
+    let totalBytes = 0;
+    let downloadedBytes = 0;
+
+    active.forEach(d => {
+      totalBytes += d.totalBytes || 0;
+      downloadedBytes += d.downloadedBytes || 0;
+    });
+
+    return {
+      ...counts,
+      totalBytesActive: totalBytes,
+      downloadedBytesActive: downloadedBytes,
+      progressActive: totalBytes > 0 ? downloadedBytes / totalBytes : 0,
+    };
+  }
+
+  /**
+   * Cierra la conexión a la base de datos
+   */
+  close() {
+    if (this.db) {
+      // Checkpoint WAL antes de cerrar
+      this.db.pragma('wal_checkpoint(TRUNCATE)');
+      this.db.close();
+      this.db = null;
+      this.statements = null;
+      this.isInitialized = false;
+      log.info('QueueDatabase cerrada');
     }
+  }
 
-    // =====================
-    // MÉTODOS PRIVADOS
-    // =====================
+  // =====================
+  // MÉTODOS PRIVADOS
+  // =====================
 
-    /**
-     * Convierte una fila de BD a objeto de descarga
-     * @param {Object} row - Fila de la BD
-     * @returns {Object} Objeto de descarga normalizado
-     */
-    _rowToDownload(row) {
-        return {
-            id: row.id,
-            title: row.title,
-            url: row.url,
-            savePath: row.save_path,
-            downloadPath: row.download_path,
-            preserveStructure: !!row.preserve_structure,
-            state: row.state,
-            progress: row.progress,
-            downloadedBytes: row.downloaded_bytes,
-            totalBytes: row.total_bytes,
-            priority: row.priority,
-            forceOverwrite: !!row.force_overwrite,
-            createdAt: row.created_at,
-            startedAt: row.started_at,
-            completedAt: row.completed_at,
-            updatedAt: row.updated_at,
-            retryCount: row.retry_count,
-            maxRetries: row.max_retries,
-            lastError: row.last_error,
-            expectedHash: row.expected_hash,
-            actualHash: row.actual_hash,
-            queuePosition: row.queue_position
-        };
+  /**
+   * Convierte una fila de BD a objeto de descarga
+   * @param {Object} row - Fila de la BD
+   * @returns {Object} Objeto de descarga normalizado
+   */
+  _rowToDownload(row) {
+    return {
+      id: row.id,
+      title: row.title,
+      url: row.url,
+      savePath: row.save_path,
+      downloadPath: row.download_path,
+      preserveStructure: !!row.preserve_structure,
+      state: row.state,
+      progress: row.progress,
+      downloadedBytes: row.downloaded_bytes,
+      totalBytes: row.total_bytes,
+      priority: row.priority,
+      forceOverwrite: !!row.force_overwrite,
+      createdAt: row.created_at,
+      startedAt: row.started_at,
+      completedAt: row.completed_at,
+      updatedAt: row.updated_at,
+      retryCount: row.retry_count,
+      maxRetries: row.max_retries,
+      lastError: row.last_error,
+      expectedHash: row.expected_hash,
+      actualHash: row.actual_hash,
+      queuePosition: row.queue_position,
+    };
+  }
+
+  /**
+   * Registra un evento en el historial
+   * @param {number} downloadId - ID de la descarga
+   * @param {string} eventType - Tipo de evento
+   * @param {Object} eventData - Datos adicionales
+   */
+  _logEvent(downloadId, eventType, eventData = {}) {
+    try {
+      this.statements.insertHistory.run({
+        downloadId,
+        eventType,
+        eventData: JSON.stringify(eventData),
+        createdAt: Date.now(),
+      });
+    } catch (error) {
+      // Silenciar errores de historial
     }
-
-    /**
-     * Registra un evento en el historial
-     * @param {number} downloadId - ID de la descarga
-     * @param {string} eventType - Tipo de evento
-     * @param {Object} eventData - Datos adicionales
-     */
-    _logEvent(downloadId, eventType, eventData = {}) {
-        try {
-            this.statements.insertHistory.run({
-                downloadId,
-                eventType,
-                eventData: JSON.stringify(eventData),
-                createdAt: Date.now()
-            });
-        } catch (error) {
-            // Silenciar errores de historial
-        }
-    }
+  }
 }
 
 // =====================
