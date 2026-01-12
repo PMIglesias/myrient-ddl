@@ -43,6 +43,7 @@ import {
   startingDownloads,
   currentDownloadIndex,
   timeoutManager,
+  triggerRef,
 } from './useDownloadState';
 import * as api from '../../services/api';
 
@@ -96,6 +97,9 @@ export function useDownloadReconciliation(
 ) {
   const showNotifications = settings?.showNotifications || { value: true };
 
+  // CRÍTICO: Flag para prevenir memory leaks y doble limpieza
+  let isCleaned = false;
+
   // Helper para obtener el valor de showNotifications
   const getShowNotifications = () => {
     return showNotifications?.value ?? true;
@@ -128,8 +132,15 @@ export function useDownloadReconciliation(
     return `${activeCount}-${queueCount}-${speedCount}`;
   };
 
+  // Throttling de actualizaciones de progreso para evitar re-renders innecesarios
+  const PROGRESS_THROTTLE_MS = 100; // Actualizar máximo cada 100ms
+  const PROGRESS_CHANGE_THRESHOLD = 0.001; // Solo actualizar si cambio > 0.1%
+  const lastProgressUpdate = new Map(); // Map<id, timestamp>
+  const lastProgressValue = new Map(); // Map<id, progress>
+
   /**
    * Maneja eventos de progreso desde el backend
+   * Optimizado con throttling y filtrado de cambios insignificantes
    */
   const handleProgressEvent = info => {
     if (!timeoutManager.isMounted || !downloads.value) return;
@@ -161,11 +172,39 @@ export function useDownloadReconciliation(
             dl.chunkProgress = [];
           }
         }
+        // Resetear throttling para nuevas descargas
+        lastProgressUpdate.delete(info.id);
+        lastProgressValue.delete(info.id);
         break;
 
       case 'progressing':
+        // CRÍTICO: Throttling y filtrado de cambios insignificantes
+        const now = Date.now();
+        const lastUpdate = lastProgressUpdate.get(info.id) || 0;
+        const lastProgress = lastProgressValue.get(info.id) ?? dl.percent ?? 0;
+        const newProgress = info.percent ?? 0;
+
+        // Verificar throttling temporal
+        if (now - lastUpdate < PROGRESS_THROTTLE_MS) {
+          // Actualización muy reciente, ignorar si no es un cambio de estado importante
+          if (info.state === 'progressing' && Math.abs(newProgress - lastProgress) < PROGRESS_CHANGE_THRESHOLD) {
+            return; // Cambio insignificante y muy reciente, ignorar
+          }
+        }
+
+        // Verificar si el cambio es significativo
+        const progressChange = Math.abs(newProgress - lastProgress);
+        if (progressChange < PROGRESS_CHANGE_THRESHOLD && now - lastUpdate < PROGRESS_THROTTLE_MS * 2) {
+          // Cambio insignificante, solo actualizar si ha pasado suficiente tiempo
+          return;
+        }
+
+        // Actualizar timestamps de throttling
+        lastProgressUpdate.set(info.id, now);
+        lastProgressValue.set(info.id, newProgress);
+
         dl.state = 'progressing';
-        dl.percent = info.percent;
+        dl.percent = newProgress;
         delete dl.error;
         delete dl.merging;
         delete dl.mergeProgress;
@@ -263,6 +302,10 @@ export function useDownloadReconciliation(
         delete dl.currentChunk;
         delete dl.bytesProcessed;
 
+        // Limpiar throttling para esta descarga
+        lastProgressUpdate.delete(info.id);
+        lastProgressValue.delete(info.id);
+
         // Mantener información de chunks para referencia (opcional)
         // Se puede limpiar si no se necesita después de completar
         if (dl.chunked) {
@@ -285,6 +328,11 @@ export function useDownloadReconciliation(
       case 'cancelled':
         dl.state = info.state;
         dl.error = info.error || 'Descarga interrumpida';
+        
+        // Limpiar throttling para esta descarga
+        lastProgressUpdate.delete(info.id);
+        lastProgressValue.delete(info.id);
+        
         speedStats.value.delete(info.id);
         downloadQueue.value = downloadQueue.value.filter(d => d.id !== info.id);
         if (saveDownloadHistoryFn) saveDownloadHistoryFn();
@@ -318,10 +366,37 @@ export function useDownloadReconciliation(
       case 'queued':
         dl.state = 'queued';
         if (info.position) dl.queuePosition = info.position;
+        // Resetear throttling para descargas en cola
+        lastProgressUpdate.delete(info.id);
+        lastProgressValue.delete(info.id);
         break;
     }
 
-    downloads.value[info.id] = dl;
+    // CRÍTICO: Optimización de actualizaciones para reducir re-renders innecesarios
+    // Con shallowRef, necesitamos crear un nuevo objeto solo cuando hay cambios significativos
+    const currentDownload = downloads.value[info.id];
+    const hasSignificantChange = 
+      !currentDownload ||
+      currentDownload.state !== dl.state ||
+      (info.state === 'progressing' && 
+       currentDownload.percent !== undefined &&
+       Math.abs((currentDownload.percent || 0) - (dl.percent || 0)) >= PROGRESS_CHANGE_THRESHOLD) ||
+      // Cambios de estado siempre son significativos
+      ['starting', 'merging', 'completed', 'interrupted', 'cancelled', 'paused', 'queued', 'awaiting-confirmation'].includes(info.state);
+
+    // ACTUALIZACIÓN DE ESTADO REACTIVO
+    // Como downloads es un shallowRef, necesitamos notificar a Vue de los cambios internos
+    // Si hay un cambio significativo (como estado), reemplazamos el objeto para asegurar que los hijos reaccionen
+    if (hasSignificantChange) {
+      downloads.value = {
+        ...downloads.value,
+        [info.id]: dl
+      };
+    } else {
+      // Para actualizaciones menores (solo progreso), triggerRef es suficiente y más eficiente
+      downloads.value[info.id] = dl;
+      triggerRef(downloads);
+    }
 
     // Limitar historial en memoria después de actualizar
     // Solo si la descarga se completó o falló (para no hacerlo en cada actualización de progreso)
@@ -339,6 +414,8 @@ export function useDownloadReconciliation(
     if (!timeoutManager.isMounted || !downloads.value || !Array.isArray(allDownloads)) return;
 
     console.log(`[useDownloads] Restaurando ${allDownloads.length} descargas desde BD...`);
+
+    const newDownloads = { ...downloads.value };
 
     // Procesar cada descarga restaurada
     allDownloads.forEach(dbDownload => {
@@ -360,11 +437,11 @@ export function useDownloadReconciliation(
         : null;
 
       // Crear o actualizar la descarga en el estado del frontend
-      const dl = downloads.value[dbDownload.id] || {
+      const dl = { ...(newDownloads[dbDownload.id] || {
         id: dbDownload.id,
         title: dbDownload.title || `Descarga ${dbDownload.id}`,
         addedAt: createdAt,
-      };
+      }) };
 
       // Actualizar información básica
       dl.id = dbDownload.id;
@@ -407,9 +484,12 @@ export function useDownloadReconciliation(
           dl.percent = 1;
       }
 
-      // Guardar en el estado
-      downloads.value[dbDownload.id] = dl;
+      // Guardar en el nuevo objeto
+      newDownloads[dbDownload.id] = dl;
     });
+
+    // Actualizar el shallowRef con el nuevo objeto para asegurar reactividad
+    downloads.value = newDownloads;
 
     console.log(`[useDownloads] ${allDownloads.length} descargas restauradas correctamente`);
 
@@ -529,6 +609,8 @@ export function useDownloadReconciliation(
    * Inicia la reconciliación y los listeners
    */
   const startReconciliation = () => {
+    // Resetear flag de limpieza si se reinicia
+    isCleaned = false;
     // Intervalo de rotación de nombre de descarga
     rotationInterval = setInterval(() => {
       if (!timeoutManager.isMounted) return;
@@ -575,8 +657,16 @@ export function useDownloadReconciliation(
 
   /**
    * Detiene la reconciliación y limpia listeners
+   * CRÍTICO: Previene memory leaks limpiando todos los event listeners IPC
    */
   const stopReconciliation = () => {
+    // Flag para prevenir doble limpieza
+    if (isCleaned) {
+      log.warn('[Reconcile] Intento de limpieza duplicada, ignorando');
+      return;
+    }
+    isCleaned = true;
+
     // Limpiar intervalos
     if (rotationInterval) {
       clearInterval(rotationInterval);
@@ -588,25 +678,42 @@ export function useDownloadReconciliation(
       reconciliationInterval = null;
     }
 
-    // Remover listeners
-    if (removeProgressListener) {
-      removeProgressListener();
-      removeProgressListener = null;
+    // CRÍTICO: Limpiar todos los listeners IPC con manejo de errores
+    try {
+      if (removeProgressListener && typeof removeProgressListener === 'function') {
+        removeProgressListener();
+        removeProgressListener = null;
+        log.debug('[Reconcile] Progress listener limpiado');
+      }
+    } catch (error) {
+      log.error('[Reconcile] Error limpiando progress listener:', error);
     }
 
-    if (removeHistoryListener) {
-      removeHistoryListener();
-      removeHistoryListener = null;
+    try {
+      if (removeHistoryListener && typeof removeHistoryListener === 'function') {
+        removeHistoryListener();
+        removeHistoryListener = null;
+        log.debug('[Reconcile] History listener limpiado');
+      }
+    } catch (error) {
+      log.error('[Reconcile] Error limpiando history listener:', error);
     }
 
-    if (removeRestoredListener) {
-      removeRestoredListener();
-      removeRestoredListener = null;
+    try {
+      if (removeRestoredListener && typeof removeRestoredListener === 'function') {
+        removeRestoredListener();
+        removeRestoredListener = null;
+        log.debug('[Reconcile] Restored listener limpiado');
+      }
+    } catch (error) {
+      log.error('[Reconcile] Error limpiando restored listener:', error);
     }
 
     // Resetear estado de reconciliación
     lastReconcileState = null;
     reconcileIntervalMs = RECONCILE_ACTIVE_INTERVAL;
+    
+    log.debug('[Reconcile] Todos los listeners y recursos limpiados');
   };
 
   return {

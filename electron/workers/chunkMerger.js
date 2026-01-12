@@ -189,17 +189,27 @@ async function mergeChunks(chunks, savePath, totalBytes, downloadId) {
       try {
         await finalHandle.close();
       } catch (e) {
-        // Ignorar errores al cerrar
+        // Ignorar errores al cerrar, pero loggear
+        parentPort.postMessage({
+          type: 'warning',
+          message: `Error al cerrar handle después de error: ${e.message}`,
+        });
       }
     }
 
-    // Enviar error
+    // CRÍTICO: Enviar error estructurado con contexto completo
     parentPort.postMessage({
       type: 'error',
       error: {
-        message: error.message,
+        message: error.message || 'Error desconocido en merge de chunks',
         stack: error.stack,
-        code: error.code,
+        code: error.code || 'MERGE_ERROR',
+        name: error.name || 'Error',
+        downloadId: downloadId,
+        savePath: savePath,
+        totalBytes: totalBytes,
+        chunksCount: chunks ? chunks.length : 0,
+        timestamp: Date.now(),
       },
     });
   }
@@ -240,26 +250,52 @@ parentPort.on('message', async message => {
 });
 
 /**
- * Maneja errores no capturados
+ * Maneja errores no capturados con contexto completo
  */
 process.on('uncaughtException', error => {
+  // CRÍTICO: Enviar error con contexto completo para debugging
   parentPort.postMessage({
     type: 'error',
     error: {
-      message: error.message,
+      message: error.message || 'Excepción no capturada en worker de merge',
       stack: error.stack,
       code: 'UNCAUGHT_EXCEPTION',
+      name: error.name || 'Error',
+      timestamp: Date.now(),
     },
   });
+  
+  // Terminar el worker después de enviar el error
+  // Esto previene que el worker quede en estado inconsistente
+  setTimeout(() => {
+    process.exit(1);
+  }, 100);
 });
 
 process.on('unhandledRejection', reason => {
+  // CRÍTICO: Enviar rejection con contexto completo
+  const errorMessage = reason instanceof Error 
+    ? reason.message 
+    : typeof reason === 'string' 
+      ? reason 
+      : 'Rejection no manejado en worker de merge';
+  
+  const errorStack = reason instanceof Error ? reason.stack : undefined;
+  
   parentPort.postMessage({
     type: 'error',
     error: {
-      message: reason?.message || String(reason),
-      stack: reason?.stack,
+      message: errorMessage,
+      stack: errorStack,
       code: 'UNHANDLED_REJECTION',
+      name: reason instanceof Error ? reason.name : 'Rejection',
+      reason: reason instanceof Error ? undefined : String(reason),
+      timestamp: Date.now(),
     },
   });
+  
+  // Terminar el worker después de enviar el error
+  setTimeout(() => {
+    process.exit(1);
+  }, 100);
 });

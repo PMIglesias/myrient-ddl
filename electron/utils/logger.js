@@ -139,14 +139,57 @@ function createScopedLogger(scope) {
 
   // Extender el logger base con métodos adicionales que facilitan logging estructurado
   const extendedChildLog = {
-    // Métodos estándar del logger que simplemente delegan al logger base
-    error: (...args) => baseChildLog.error(...args),
-    warn: (...args) => baseChildLog.warn(...args),
-    info: (...args) => baseChildLog.info(...args),
-    verbose: (...args) => baseChildLog.verbose(...args),
-    debug: (...args) => baseChildLog.debug(...args),
-    silly: (...args) => baseChildLog.silly(...args),
-    log: (...args) => baseChildLog.info(...args),
+    // Métodos estándar del logger que soportan logging estructurado
+    // Si el primer argumento es un string y el segundo es un objeto, se formatea como estructurado
+    error: (...args) => {
+      if (args.length === 2 && typeof args[0] === 'string' && typeof args[1] === 'object' && args[1] !== null) {
+        baseChildLog.error(`${args[0]}`, formatObject(args[1]));
+      } else {
+        baseChildLog.error(...args);
+      }
+    },
+    warn: (...args) => {
+      if (args.length === 2 && typeof args[0] === 'string' && typeof args[1] === 'object' && args[1] !== null) {
+        baseChildLog.warn(`${args[0]}`, formatObject(args[1]));
+      } else {
+        baseChildLog.warn(...args);
+      }
+    },
+    info: (...args) => {
+      if (args.length === 2 && typeof args[0] === 'string' && typeof args[1] === 'object' && args[1] !== null) {
+        baseChildLog.info(`${args[0]}`, formatObject(args[1]));
+      } else {
+        baseChildLog.info(...args);
+      }
+    },
+    verbose: (...args) => {
+      if (args.length === 2 && typeof args[0] === 'string' && typeof args[1] === 'object' && args[1] !== null) {
+        baseChildLog.verbose(`${args[0]}`, formatObject(args[1]));
+      } else {
+        baseChildLog.verbose(...args);
+      }
+    },
+    debug: (...args) => {
+      if (args.length === 2 && typeof args[0] === 'string' && typeof args[1] === 'object' && args[1] !== null) {
+        baseChildLog.debug(`${args[0]}`, formatObject(args[1]));
+      } else {
+        baseChildLog.debug(...args);
+      }
+    },
+    silly: (...args) => {
+      if (args.length === 2 && typeof args[0] === 'string' && typeof args[1] === 'object' && args[1] !== null) {
+        baseChildLog.silly(`${args[0]}`, formatObject(args[1]));
+      } else {
+        baseChildLog.silly(...args);
+      }
+    },
+    log: (...args) => {
+      if (args.length === 2 && typeof args[0] === 'string' && typeof args[1] === 'object' && args[1] !== null) {
+        baseChildLog.info(`${args[0]}`, formatObject(args[1]));
+      } else {
+        baseChildLog.info(...args);
+      }
+    },
 
     // Inicia una operación y retorna una función para finalizarla con medición de tiempo
     // Útil para medir tiempos de ejecución de operaciones y debugging de rendimiento

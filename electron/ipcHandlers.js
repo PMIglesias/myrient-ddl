@@ -45,7 +45,7 @@
  * @property {boolean} [forceOverwrite=false] - Si sobrescribir sin preguntar
  */
 
-const { ipcMain, dialog } = require('electron');
+const { ipcMain, dialog, shell } = require('electron');
 const fs = require('fs');
 const path = require('path');
 const database = require('./database');
@@ -63,10 +63,38 @@ const {
   validateDownloadId,
   validateConfigFilename,
   validateDownloadFolderParams,
+  sanitizeSearchTerm,
+  validateAndSanitizeDownloadPath,
+  sanitizeFileName,
 } = require('./utils');
+const { sendDownloadProgress } = require('./utils/ipcHelpers');
 const { ERRORS } = require('./constants/errors');
+const { RateLimiter } = require('./utils/rateLimiter');
+const config = require('./config');
 
 const log = logger.child('IPC');
+
+// =====================
+// RATE LIMITING
+// =====================
+
+// CRÍTICO: Rate limiter para búsquedas para prevenir saturación del sistema
+const searchRateLimiter = new RateLimiter(
+  config.rateLimiting?.search?.maxRequests || 10,
+  config.rateLimiting?.search?.windowMs || 1000
+);
+
+// Limpieza periódica del rate limiter para liberar memoria
+const cleanupInterval = setInterval(() => {
+  searchRateLimiter.cleanup();
+}, config.rateLimiting?.search?.cleanupIntervalMs || 60000);
+
+// Limpiar intervalo al cerrar la aplicación
+if (typeof process !== 'undefined') {
+  process.on('exit', () => {
+    clearInterval(cleanupInterval);
+  });
+}
 
 /**
  * Crea un wrapper para handlers IPC con manejo automático de errores
@@ -172,13 +200,33 @@ function registerHandlers(mainWindow) {
   ipcMain.handle(
     'search-db',
     createHandler('search-db', async (event, searchTerm, options = {}) => {
+      // CRÍTICO: Rate limiting para prevenir saturación del sistema
+      // Usar sender.id como identificador único por ventana de renderer
+      const identifier = event.sender.id.toString();
+
+      if (!searchRateLimiter.isAllowed(identifier)) {
+        const status = searchRateLimiter.getStatus(identifier);
+        log.warn(
+          `Rate limit excedido para búsqueda (sender: ${identifier}): ${status?.count || 'N/A'}/${searchRateLimiter.maxRequests} requests`
+        );
+        return {
+          success: false,
+          error: 'Demasiadas búsquedas. Por favor espera un momento antes de buscar nuevamente.',
+          rateLimited: true,
+          retryAfter: status?.resetInMs || searchRateLimiter.windowMs,
+        };
+      }
+
       const { searchService } = getServices();
 
-      // Validar término de búsqueda
-      const validation = validateSearchTerm(searchTerm);
+      // CRÍTICO: Sanitizar término de búsqueda antes de validar
+      const sanitizedTerm = sanitizeSearchTerm(searchTerm);
+
+      // Validar término de búsqueda (ya sanitizado)
+      const validation = validateSearchTerm(sanitizedTerm);
       if (!validation.valid) {
         // Retornar array vacío para búsquedas muy cortas (no es error)
-        if (searchTerm && searchTerm.trim().length < 2) {
+        if (sanitizedTerm && sanitizedTerm.trim().length < 2) {
           return { success: true, data: [], total: 0 };
         }
         return { success: false, error: validation.error };
@@ -221,8 +269,8 @@ function registerHandlers(mainWindow) {
         };
       }
 
-      // Ejecutar búsqueda (database.search es síncrono, pero lo mantenemos como async para consistencia)
-      const result = database.search(searchTermToUse, normalizedOptions);
+      // Ejecutar búsqueda (ahora puede ser async si usa worker thread)
+      const result = await database.search(searchTermToUse, normalizedOptions);
 
       // Guardar resultado en caché si SearchService está disponible y la búsqueda fue exitosa
       if (searchService && result.success) {
@@ -295,7 +343,20 @@ function registerHandlers(mainWindow) {
     createHandler('download-file', async (event, params) => {
       const { downloadService, queueService } = getServices();
 
-      // Validar parámetros de descarga
+      // CRÍTICO: Sanitizar inputs antes de validar
+      if (params.title) {
+        params.title = sanitizeFileName(params.title);
+      }
+
+      if (params.downloadPath) {
+        const pathValidation = validateAndSanitizeDownloadPath(params.downloadPath);
+        if (!pathValidation.valid) {
+          return { success: false, error: pathValidation.error };
+        }
+        params.downloadPath = pathValidation.path;
+      }
+
+      // Validar parámetros de descarga (ya sanitizados)
       const validation = validateDownloadParams(params);
 
       if (!validation.valid) {
@@ -377,15 +438,13 @@ function registerHandlers(mainWindow) {
           };
         }
 
-        // Notificar que está en cola
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send('download-progress', {
-            id: validatedParams.id,
-            state: 'queued',
-            title: validatedParams.title,
-            position: position,
-          });
-        }
+        // Notificar que está en cola (usar helper optimizado)
+        sendDownloadProgress(mainWindow, {
+          id: validatedParams.id,
+          state: 'queued',
+          title: validatedParams.title,
+          progress: 0,
+        }, { includeMetadata: true });
 
         log.info(`Descarga en cola: ${validatedParams.title} (posición ${position})`);
         return { success: true, queued: true, position };
@@ -499,15 +558,13 @@ function registerHandlers(mainWindow) {
         return { success: false, error: ERRORS.DOWNLOAD.RESUME_FAILED };
       }
 
-      // Notificar al frontend que la descarga está en cola
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('download-progress', {
-          id: dbDownload.id,
-          state: 'queued',
-          title: dbDownload.title,
-          progress: dbDownload.progress || 0,
-        });
-      }
+      // Notificar al frontend que la descarga está en cola (usar helper optimizado)
+      sendDownloadProgress(mainWindow, {
+        id: dbDownload.id,
+        state: 'queued',
+        title: dbDownload.title,
+        progress: dbDownload.progress || 0,
+      }, { includeMetadata: true });
 
       // Agregar a la cola del DownloadManager
       // Si hay un savePath guardado, pasarlo para evitar pedir nueva ubicación
@@ -655,16 +712,14 @@ function registerHandlers(mainWindow) {
         log.info(`Descarga ${id} agregada a la cola en memoria después de reiniciar`);
       }
 
-      // Notificar al frontend que la descarga está en cola
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('download-progress', {
-          id,
-          state: 'queued',
-          title: updatedDownload.title,
-          progress: 0,
-          downloadedBytes: 0,
-        });
-      }
+      // Notificar al frontend que la descarga está en cola (usar helper optimizado)
+      sendDownloadProgress(mainWindow, {
+        id,
+        state: 'queued',
+        title: updatedDownload.title,
+        progress: 0,
+        downloadedBytes: 0,
+      }, { includeMetadata: true });
 
       // Procesar la cola para iniciar la descarga
       setImmediate(() => downloadManager.processQueue());
@@ -735,16 +790,14 @@ function registerHandlers(mainWindow) {
         }
       }
 
-      // Notificar al frontend que la descarga está en cola
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('download-progress', {
-          id,
-          state: 'queued',
-          title: updatedDownload.title,
-          progress: 0,
-          downloadedBytes: 0,
-        });
-      }
+      // Notificar al frontend que la descarga está en cola (usar helper optimizado)
+      sendDownloadProgress(mainWindow, {
+        id,
+        state: 'queued',
+        title: updatedDownload.title,
+        progress: 0,
+        downloadedBytes: 0,
+      }, { includeMetadata: true });
 
       // Procesar la cola para iniciar la descarga con forceOverwrite
       setImmediate(() => downloadManager.processQueue());
@@ -785,13 +838,12 @@ function registerHandlers(mainWindow) {
       // Remover de la cola en memoria si está ahí
       downloadManager.removeFromQueue(id);
 
-      // Notificar al frontend que la descarga fue eliminada
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('download-progress', {
-          id,
-          state: 'deleted',
-        });
-      }
+      // Notificar al frontend que la descarga fue eliminada (usar helper optimizado)
+      sendDownloadProgress(mainWindow, {
+        id,
+        state: 'deleted',
+        progress: 0,
+      });
 
       return { success: true };
     })
@@ -980,11 +1032,12 @@ function registerHandlers(mainWindow) {
           log.info(`Estadísticas de carpeta:`, folderStats);
         }
 
-        // Agregar cada archivo a la cola de descargas
-        let addedCount = 0;
-        let skippedCount = 0;
+        // CRÍTICO: Preparar todas las descargas primero, luego insertar en transacción
+        const downloadsToAdd = [];
+        const skippedFiles = [];
         const errors = [];
 
+        // Primera pasada: preparar y validar todas las descargas
         for (const file of files) {
           // Preparar parámetros de descarga usando DownloadService si está disponible
           let downloadParams;
@@ -998,7 +1051,7 @@ function registerHandlers(mainWindow) {
                 fileName: file.title,
                 error: prepared.error,
               });
-              skippedCount++;
+              skippedFiles.push(file);
               continue;
             }
 
@@ -1014,9 +1067,25 @@ function registerHandlers(mainWindow) {
             };
           }
 
+          // CRÍTICO: Sanitizar inputs
+          downloadParams.title = sanitizeFileName(downloadParams.title);
+          if (downloadParams.downloadPath) {
+            const pathValidation = validateAndSanitizeDownloadPath(downloadParams.downloadPath);
+            if (!pathValidation.valid) {
+              errors.push({
+                fileId: file.id,
+                fileName: file.title,
+                error: pathValidation.error,
+              });
+              skippedFiles.push(file);
+              continue;
+            }
+            downloadParams.downloadPath = pathValidation.path;
+          }
+
           // Verificar si ya está en descarga o es duplicado
           if (downloadManager.isDownloadActive(downloadParams.id)) {
-            skippedCount++;
+            skippedFiles.push(file);
             continue;
           }
 
@@ -1029,30 +1098,97 @@ function registerHandlers(mainWindow) {
 
             const duplicateCheck = downloadService.isDuplicate(downloadParams, existingDownloads);
             if (duplicateCheck.isDuplicate) {
-              skippedCount++;
+              skippedFiles.push(file);
               continue;
             }
           }
 
-          // Agregar a la cola (siempre a la cola para evitar saturar)
-          const position = downloadManager.addToQueueWithPersist(downloadParams);
+          // Agregar a lista de descargas a insertar
+          downloadsToAdd.push(downloadParams);
+        }
 
-          if (position === -1) {
-            skippedCount++;
-          } else {
-            addedCount++;
+        // CRÍTICO: Insertar todas las descargas en una sola transacción
+        let addedCount = 0;
+        if (downloadsToAdd.length > 0) {
+          try {
+            // Usar método de transacción masiva si está disponible, sino insertar una por una
+            const now = Date.now();
+            let nextPosition = queueDatabase.statements.getNextQueuePosition.get().next;
 
-            // Notificar que está en cola
-            if (mainWindow && !mainWindow.isDestroyed()) {
-              mainWindow.webContents.send('download-progress', {
-                id: file.id,
-                state: 'queued',
-                title: file.title,
-                position: position,
-              });
+            const transaction = queueDatabase.db.transaction((downloads) => {
+              const insertStmt = queueDatabase.statements.insertDownload;
+
+              for (let i = 0; i < downloads.length; i++) {
+                const download = downloads[i];
+                
+                // Verificar que no existe antes de insertar
+                if (queueDatabase.exists(download.id)) {
+                  continue;
+                }
+
+                insertStmt.run({
+                  id: download.id,
+                  title: download.title,
+                  url: null,
+                  savePath: null,
+                  downloadPath: download.downloadPath || null,
+                  preserveStructure: download.preserveStructure ? 1 : 0,
+                  state: 'queued',
+                  progress: 0,
+                  downloadedBytes: 0,
+                  totalBytes: 0,
+                  priority: download.priority ?? 1,
+                  forceOverwrite: download.forceOverwrite ? 1 : 0,
+                  createdAt: now,
+                  updatedAt: now,
+                  queuePosition: nextPosition + i,
+                });
+              }
+            });
+
+            // Ejecutar transacción
+            transaction(downloadsToAdd);
+            addedCount = downloadsToAdd.length;
+            log.info(`Transacción completada: ${addedCount} descargas insertadas en batch`);
+
+            // Agregar a cola en memoria y notificar
+            downloadsToAdd.forEach((download, index) => {
+              const position = downloadManager.addToQueue(download);
+              if (position > 0) {
+                // Notificar individualmente (payload pequeño)
+                sendDownloadProgress(mainWindow, {
+                  id: download.id,
+                  state: 'queued',
+                  title: download.title,
+                  progress: 0,
+                }, { includeMetadata: true });
+              }
+            });
+          } catch (error) {
+            log.error('Error en transacción de descargas masivas:', error);
+            // Fallback: insertar una por una si la transacción falla
+            log.warn('Usando fallback: insertando descargas una por una');
+            for (const download of downloadsToAdd) {
+              try {
+                const position = downloadManager.addToQueueWithPersist(download);
+                if (position > 0) {
+                  addedCount++;
+                  sendDownloadProgress(mainWindow, {
+                    id: download.id,
+                    state: 'queued',
+                    title: download.title,
+                    progress: 0,
+                  }, { includeMetadata: true });
+                }
+              } catch (err) {
+                log.error(`Error insertando descarga ${download.id}:`, err);
+                skippedFiles.push({ id: download.id, title: download.title });
+              }
             }
           }
         }
+
+        const skippedCount = skippedFiles.length;
 
         // Procesar la cola
         downloadManager.processQueue();
@@ -1185,6 +1321,43 @@ function registerHandlers(mainWindow) {
       }
 
       return { success: true, path: result.filePaths[0] };
+    })
+  );
+
+  ipcMain.handle(
+    'open-folder',
+    createHandler('open-folder', async (event, filePath) => {
+      // Validar que filePath sea un string
+      if (!filePath || typeof filePath !== 'string') {
+        return { success: false, error: 'Ruta no proporcionada o inválida' };
+      }
+
+      try {
+        const resolvedPath = path.resolve(filePath);
+        
+        // Verificar si la ruta existe
+        if (!fs.existsSync(resolvedPath)) {
+          return { success: false, error: 'La ruta no existe' };
+        }
+
+        // Verificar si es un directorio o un archivo
+        const stats = fs.statSync(resolvedPath);
+        
+        if (stats.isDirectory()) {
+          // Si es un directorio, abrirlo directamente
+          await shell.openPath(resolvedPath);
+        } else if (stats.isFile()) {
+          // Si es un archivo, mostrar el archivo en el explorador
+          shell.showItemInFolder(resolvedPath);
+        } else {
+          return { success: false, error: 'La ruta no es un archivo ni un directorio válido' };
+        }
+        
+        return { success: true };
+      } catch (error) {
+        log.error('Error abriendo carpeta:', error);
+        return { success: false, error: error.message };
+      }
     })
   );
 

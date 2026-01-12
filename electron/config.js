@@ -253,6 +253,19 @@ module.exports = {
     searchDebounce: 300,
   },
 
+  // Configuración de rate limiting para prevenir abuso del sistema
+  rateLimiting: {
+    // Rate limiting para búsquedas en la base de datos
+    search: {
+      // Número máximo de búsquedas permitidas en la ventana de tiempo
+      maxRequests: 10,
+      // Tamaño de la ventana de tiempo en milisegundos (1 segundo)
+      windowMs: 1000,
+      // Intervalo de limpieza en milisegundos (cada minuto)
+      cleanupIntervalMs: 60000,
+    },
+  },
+
   // Rutas de archivos y directorios utilizados por la aplicación
   paths: {
     // Ruta del directorio de datos del usuario donde se almacenan configuraciones y caché

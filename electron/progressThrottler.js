@@ -201,10 +201,13 @@ class ProgressThrottler {
       return;
     }
 
+    const updateCount = this.pendingUpdates.size;
+    
     this.pendingUpdates.forEach(progressInfo => {
       this.mainWindow.webContents.send('download-progress', progressInfo);
     });
 
+    log.debug(`Enviado lote de ${updateCount} actualizaciones de progreso`);
     this.pendingUpdates.clear();
   }
 

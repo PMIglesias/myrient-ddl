@@ -59,6 +59,7 @@ const { spawn } = require('child_process');
 const { app, dialog, BrowserWindow } = require('electron');
 const config = require('./config');
 const { logger, escapeLikeTerm } = require('./utils');
+const { getWorkerManager } = require('./utils/dbQueryWorkerManager');
 
 // Logger con scope específico para este módulo
 const log = logger.child('Database');
@@ -91,6 +92,11 @@ class DatabaseService {
   constructor() {
     this.db = null;
     this.statements = null;
+    
+    // Worker thread para búsquedas FTS pesadas (opcional, con fallback)
+    this.workerManager = getWorkerManager();
+    this.useWorkerForFTS = true; // Habilitar worker para búsquedas FTS
+    this.workerFTSThreshold = 100; // Usar worker si el límite es mayor a 100 resultados
   }
 
   /**
@@ -161,6 +167,15 @@ class DatabaseService {
     try {
       this.db = new Database(dbPath, { readonly: true, fileMustExist: true });
       this._prepareStatements();
+
+      // Inicializar worker thread para búsquedas FTS pesadas (opcional)
+      // Usar tipo 'catalog' para la base de datos de Myrient
+      if (this.useWorkerForFTS) {
+        this.workerManager.initialize(dbPath, 'catalog').catch((error) => {
+          log.warn('No se pudo inicializar worker thread, usando modo síncrono:', error.message);
+          this.useWorkerForFTS = false;
+        });
+      }
 
       endInit(`conectada en ${dbPath}`);
       return true;
@@ -280,6 +295,47 @@ class DatabaseService {
   }
 
   /**
+   * Valida que un nombre de tabla FTS esté en la whitelist permitida
+   * Previene SQL injection en queries dinámicas
+   *
+   * @private
+   * @param {string} tableName - Nombre de tabla a validar
+   * @returns {boolean} true si el nombre es válido, false en caso contrario
+   */
+  _validateFTSTableName(tableName) {
+    if (!tableName || typeof tableName !== 'string') {
+      return false;
+    }
+
+    // Whitelist de caracteres permitidos en nombres de tablas SQLite
+    // SQLite permite: letras, números, guiones bajos, y algunos caracteres especiales
+    const validTableNamePattern = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
+    
+    if (!validTableNamePattern.test(tableName)) {
+      log.error(`Nombre de tabla FTS inválido (caracteres no permitidos): ${tableName}`);
+      return false;
+    }
+
+    // Verificar que no contenga palabras clave SQL peligrosas
+    const dangerousKeywords = ['DROP', 'DELETE', 'UPDATE', 'INSERT', 'ALTER', 'CREATE', 'TRUNCATE'];
+    const upperTableName = tableName.toUpperCase();
+    for (const keyword of dangerousKeywords) {
+      if (upperTableName.includes(keyword)) {
+        log.error(`Nombre de tabla FTS contiene palabra clave peligrosa: ${tableName}`);
+        return false;
+      }
+    }
+
+    // Verificar longitud razonable (nombres de tablas SQLite típicamente < 64 caracteres)
+    if (tableName.length > 64) {
+      log.error(`Nombre de tabla FTS demasiado largo: ${tableName.length} caracteres`);
+      return false;
+    }
+
+    return true;
+  }
+
+  /**
    * Prepara los statements reutilizables
    */
   _prepareStatements() {
@@ -292,15 +348,32 @@ class DatabaseService {
     this.ftsColumns = ftsInfo ? ftsInfo.columns : ['title'];
     this.useFTS = !!this.ftsTable;
 
+    // CRÍTICO: Validar nombre de tabla FTS antes de usarlo en queries dinámicas
+    if (this.useFTS && !this._validateFTSTableName(this.ftsTable)) {
+      log.error(`Tabla FTS inválida detectada: ${this.ftsTable}, deshabilitando FTS por seguridad`);
+      this.useFTS = false;
+      this.ftsTable = null;
+      this.ftsType = null;
+    }
+
     // Usar '|' como carácter de escape (más seguro que \)
     this.statements = {
       // Búsqueda FTS optimizada con paginación (si está disponible)
       searchFTS: this.useFTS
         ? (() => {
             const tableName = this.ftsTable;
+            
+            // Validación adicional antes de preparar statement
+            if (!this._validateFTSTableName(tableName)) {
+              log.error('No se puede preparar statement FTS: nombre de tabla inválido');
+              return null;
+            }
+
             // FTS5 tiene bm25() con mejor ranking, FTS4 usa matchinfo()
             if (this.ftsType === 'fts5') {
               // Query optimizada con bm25() y mejor ordenamiento
+              // NOTA: tableName ya fue validado, pero SQLite no permite placeholders para nombres de tablas
+              // Por lo tanto, validamos estrictamente antes de usar
               return this.db.prepare(`
                         SELECT n.id, n.title, n.modified_date, n.type, n.parent_id, n.size,
                                bm25(${tableName}) AS relevance
@@ -330,6 +403,13 @@ class DatabaseService {
       searchFTSNoPagination: this.useFTS
         ? (() => {
             const tableName = this.ftsTable;
+            
+            // Validación adicional antes de preparar statement
+            if (!this._validateFTSTableName(tableName)) {
+              log.error('No se puede preparar statement FTS (sin paginación): nombre de tabla inválido');
+              return null;
+            }
+
             if (this.ftsType === 'fts5') {
               return this.db.prepare(`
                         SELECT n.id, n.title, n.modified_date, n.type, n.parent_id, n.size,
@@ -575,6 +655,28 @@ class DatabaseService {
   }
 
   /**
+   * Búsqueda FTS síncrona (modo fallback o para búsquedas pequeñas)
+   * @private
+   * @param {string} ftsTerm - Término FTS preparado
+   * @param {number} limit - Límite de resultados
+   * @param {number} offset - Offset para paginación
+   * @returns {Array} Resultados
+   */
+  _searchFTSSync(ftsTerm, limit = 500, offset = 0) {
+    // Usar query con paginación si está disponible
+    const stmt =
+      limit === 500 && offset === 0
+        ? this.statements.searchFTSNoPagination
+        : this.statements.searchFTS;
+
+    if (limit === 500 && offset === 0) {
+      return stmt.all(ftsTerm);
+    } else {
+      return stmt.all(ftsTerm, limit, offset);
+    }
+  }
+
+  /**
    * Búsqueda usando LIKE mejorado con ranking y paginación
    * @param {string} term - Término de búsqueda
    * @param {number} limit - Límite de resultados
@@ -624,9 +726,9 @@ class DatabaseService {
    * @param {boolean} options.usePrefix - Usar wildcard al final (default: true)
    * @param {boolean} options.usePhrase - Buscar frase exacta (default: false)
    * @param {boolean} options.useOR - Usar OR en lugar de AND (default: false)
-   * @returns {Object} Resultado de la búsqueda
+   * @returns {Promise<Object>|Object} Resultado de la búsqueda (puede ser async si usa worker)
    */
-  search(searchTerm, options = {}) {
+  async search(searchTerm, options = {}) {
     if (!this.db) {
       return { success: false, error: 'Base de datos no disponible' };
     }
@@ -654,28 +756,40 @@ class DatabaseService {
         );
 
         try {
-          // Usar query con paginación si está disponible
-          const stmt =
-            limit === 500 && offset === 0
-              ? this.statements.searchFTSNoPagination
-              : this.statements.searchFTS;
+          // Decidir si usar worker thread para búsquedas pesadas
+          const shouldUseWorker =
+            this.useWorkerForFTS &&
+            limit >= this.workerFTSThreshold &&
+            this.workerManager.isInitialized;
 
-          if (limit === 500 && offset === 0) {
-            results = stmt.all(ftsTerm);
+          if (shouldUseWorker) {
+            // Usar worker thread para búsquedas FTS pesadas
+            try {
+              const workerResult = await this.workerManager.searchFTS(
+                ftsTerm,
+                { limit, offset },
+                this.ftsTable,
+                this.ftsType
+              );
+
+              if (workerResult.success) {
+                results = workerResult.data || [];
+                total = workerResult.total || results.length;
+                log.debug(`Búsqueda FTS en worker: ${results.length} resultados`);
+              } else {
+                throw new Error(workerResult.error || 'Error desconocido en worker');
+              }
+            } catch (workerError) {
+              // Fallback a modo síncrono si el worker falla
+              log.warn('Error en worker, usando modo síncrono:', workerError.message);
+              results = this._searchFTSSync(ftsTerm, limit, offset);
+              total = results.length;
+            }
           } else {
-            results = stmt.all(ftsTerm, limit, offset);
-          }
-
-          // Para FTS5, obtener conteo total (aproximado) si es necesario
-          // Nota: COUNT(*) en FTS puede ser lento, solo si realmente se necesita
-          if (offset === 0 && results.length === limit) {
-            // Podría haber más resultados, pero no contamos para no ralentizar
-            total = results.length;
-          } else {
+            // Usar modo síncrono para búsquedas pequeñas o si el worker no está disponible
+            results = this._searchFTSSync(ftsTerm, limit, offset);
             total = results.length;
           }
-
-          log.debug(`Búsqueda FTS: ${results.length} resultados`);
         } catch (ftsError) {
           // Si FTS falla, usar fallback
           log.warn('Error en búsqueda FTS, usando fallback:', ftsError.message);

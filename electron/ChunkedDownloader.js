@@ -213,9 +213,43 @@ class ChunkDownload {
         request.setHeader('Range', `bytes=${actualStartByte}-${this.endByte}`);
       }
 
+      // CRÍTICO: Configurar timeout para prevenir requests colgadas indefinidamente
+      const timeout = config.network?.timeout || config.network?.responseTimeout || 30000; // 30 segundos default
+      let timeoutId = null;
+
+      const clearRequestTimeout = () => {
+        if (timeoutId) {
+          clearTimeout(timeoutId);
+          timeoutId = null;
+        }
+      };
+
+      // Configurar timeout para recibir respuesta
+      timeoutId = setTimeout(() => {
+        if (request && !request.destroyed) {
+          log.warn(
+            `Chunk ${this.chunkIndex}: timeout después de ${timeout}ms (no se recibió respuesta)`
+          );
+          try {
+            request.abort();
+          } catch (e) {
+            log.debug(`Error abortando request con timeout: ${e.message}`);
+          }
+          this._handleError(
+            new Error(`Timeout: no se recibió respuesta del servidor en ${timeout}ms`)
+          );
+        }
+      }, timeout);
+
       this.request = request;
-      this.request.on('response', response => this._handleResponse(response, actualStartByte));
-      this.request.on('error', error => this._handleError(error));
+      this.request.on('response', response => {
+        clearRequestTimeout();
+        this._handleResponse(response, actualStartByte);
+      });
+      this.request.on('error', error => {
+        clearRequestTimeout();
+        this._handleError(error);
+      });
 
       this.request.end();
     } catch (error) {
@@ -225,6 +259,17 @@ class ChunkDownload {
 
   /**
    * Maneja la respuesta HTTP
+   */
+  /**
+   * Maneja la respuesta HTTP del servidor para este chunk
+   * 
+   * Valida el código de estado HTTP y configura el stream de escritura
+   * para guardar los datos recibidos en el archivo temporal del chunk.
+   * 
+   * @private
+   * @param {Object} response - Objeto de respuesta HTTP de Electron
+   * @param {number} actualStartByte - Byte real desde donde comenzar (puede diferir por reanudación)
+   * @returns {void}
    */
   _handleResponse(response, actualStartByte) {
     this.response = response;
@@ -263,10 +308,12 @@ class ChunkDownload {
     const chunkTotalBytes = this.endByte - this.startByte + 1;
     let sessionDownloaded = 0;
 
-    // Tracking de backpressure para este chunk
+    // CRÍTICO: Tracking mejorado de backpressure para este chunk
     let chunkBackpressureEvents = 0;
     let chunkBackpressureStartTime = null;
     let chunkDrainEvents = 0;
+    let isPaused = false; // Flag para prevenir múltiples pausas
+    let drainListener = null; // Referencia al listener para limpieza
 
     // Handler para errores de escritura
     this.fileStream.on('error', error => {
@@ -274,7 +321,7 @@ class ChunkDownload {
       this._handleError(error);
     });
 
-    // Handler mejorado para datos con tracking de backpressure
+    // CRÍTICO: Handler mejorado para datos con manejo robusto de backpressure
     response.on('data', chunk => {
       if (this.isAborted || !this.fileStream || this.fileStream.destroyed) {
         return;
@@ -283,8 +330,9 @@ class ChunkDownload {
       // Escribir con backpressure mejorado
       const canContinue = this.fileStream.write(chunk);
 
-      if (!canContinue) {
-        // Backpressure detectado en este chunk
+      if (!canContinue && !isPaused) {
+        // Backpressure detectado - pausar respuesta
+        isPaused = true;
         chunkBackpressureEvents++;
 
         if (!chunkBackpressureStartTime) {
@@ -299,25 +347,32 @@ class ChunkDownload {
         // Pausar respuesta
         response.pause();
 
-        // Remover listener anterior para evitar múltiples listeners
-        this.fileStream.removeAllListeners('drain');
-        this.fileStream.once('drain', () => {
-          chunkDrainEvents++;
+        // CRÍTICO: Crear listener de drain una sola vez si no existe
+        // Usar once() en lugar de on() para auto-remover después de ejecutar
+        if (!drainListener) {
+          drainListener = () => {
+            isPaused = false;
+            chunkDrainEvents++;
 
-          if (chunkBackpressureStartTime) {
-            const duration = Date.now() - chunkBackpressureStartTime;
-            if (duration > 100) {
-              log.debug(`[Backpressure] Chunk ${this.chunkIndex} drenó después de ${duration}ms`);
+            if (chunkBackpressureStartTime) {
+              const duration = Date.now() - chunkBackpressureStartTime;
+              if (duration > 100) {
+                log.debug(`[Backpressure] Chunk ${this.chunkIndex} drenó después de ${duration}ms`);
+              }
+              chunkBackpressureStartTime = null;
             }
-            chunkBackpressureStartTime = null;
-          }
 
-          if (!this.isAborted && !response.destroyed) {
-            response.resume();
-          }
-        });
-      } else {
-        // Sin backpressure - resetear si había
+            if (!this.isAborted && !response.destroyed) {
+              response.resume();
+            }
+          };
+
+          // Usar once() para auto-remover después de ejecutar
+          this.fileStream.once('drain', drainListener);
+        }
+      } else if (canContinue && isPaused) {
+        // Sin backpressure - resetear flag si había
+        isPaused = false;
         if (chunkBackpressureStartTime) {
           chunkBackpressureStartTime = null;
         }
@@ -413,6 +468,16 @@ class ChunkDownload {
    * @param {number} chunkSize - Tamaño del chunk en bytes
    * @returns {number} Tamaño de buffer recomendado
    */
+  /**
+   * Calcula el tamaño óptimo del buffer de escritura para un chunk específico
+   * 
+   * El tamaño del buffer se adapta según el tamaño del chunk para optimizar
+   * el rendimiento de escritura en disco.
+   * 
+   * @private
+   * @param {number} chunkSize - Tamaño total del chunk en bytes
+   * @returns {number} Tamaño del buffer en bytes
+   */
   _calculateChunkBufferSize(chunkSize) {
     const minSize = config.downloads.minWriteBufferSize || 256 * 1024;
     const maxSize = config.downloads.maxWriteBufferSize || 16 * 1024 * 1024;
@@ -438,6 +503,16 @@ class ChunkDownload {
 
   /**
    * Maneja errores
+   */
+  /**
+   * Maneja errores durante la descarga del chunk
+   * 
+   * Actualiza el estado del chunk a FAILED y realiza limpieza de recursos.
+   * Notifica el error a través del callback onError.
+   * 
+   * @private
+   * @param {Error} error - Error que ocurrió durante la descarga
+   * @returns {void}
    */
   _handleError(error) {
     if (this.isAborted) return;
@@ -476,6 +551,15 @@ class ChunkDownload {
   /**
    * Limpia recursos
    */
+  /**
+   * Limpia recursos utilizados por el chunk durante la descarga
+   * 
+   * Cierra streams, aborta requests HTTP y opcionalmente elimina el archivo temporal.
+   * 
+   * @private
+   * @param {boolean} [keepTempFile=true] - Si mantener el archivo temporal (útil para reanudación)
+   * @returns {void}
+   */
   _cleanup(keepTempFile = true) {
     // Abortar request
     if (this.request) {
@@ -500,9 +584,14 @@ class ChunkDownload {
       this.response = null;
     }
 
-    // Cerrar fileStream
+    // CRÍTICO: Cerrar fileStream y limpiar listener de drain
     if (this.fileStream) {
       try {
+        // Remover listener de drain si existe (previene memory leaks)
+        if (this.drainListener) {
+          this.fileStream.removeListener('drain', this.drainListener);
+          this.drainListener = null;
+        }
         this.fileStream.removeAllListeners();
         if (!this.fileStream.destroyed) {
           this.fileStream.end();
@@ -599,11 +688,15 @@ class ChunkedDownloader {
     this.activeChunks = new Map();
     this.state = 'idle'; // idle, downloading, paused, completed, failed, merging
     this.startTime = null;
+    this.lastUpdate = null; // Última actualización de actividad (para detección de zombies)
     this.completedChunks = 0;
     this.totalDownloadedBytes = 0;
     this.isAborted = false;
     this.mergeInProgress = false;
     this.mergeWorker = null; // Worker thread para merge
+    this.completionCheckTimeout = null; // Timeout para verificación de seguridad de completado
+    this.stallCheckInterval = null; // Intervalo para detectar chunks estancados (zombies)
+    this.lastStallCheck = Date.now();
 
     // Callbacks
     this.onProgress = options.onProgress || (() => {});
@@ -670,6 +763,16 @@ class ChunkedDownloader {
   /**
    * Calcula el número óptimo de chunks basado en el tamaño del archivo
    */
+  /**
+   * Calcula el número óptimo de chunks para dividir una descarga
+   * 
+   * El número de chunks se ajusta según el tamaño total del archivo para
+   * equilibrar el paralelismo y la sobrecarga de gestión.
+   * 
+   * @private
+   * @param {number} totalBytes - Tamaño total del archivo en bytes
+   * @returns {number} Número óptimo de chunks (entre 2 y maxChunks)
+   */
   _calculateOptimalChunks(totalBytes) {
     const minChunkSize = config.downloads.chunked?.minChunkSize || 5 * 1024 * 1024; // 5 MB mínimo
     const maxChunks = config.downloads.chunked?.maxChunks || 16;
@@ -689,7 +792,113 @@ class ChunkedDownloader {
   }
 
   /**
+   * Inicia el detector de chunks estancados (zombies)
+   * @private
+   */
+  /**
+   * Inicia el detector de chunks estancados (stall detector)
+   * 
+   * Configura un intervalo que periódicamente verifica si algún chunk activo
+   * no ha reportado progreso recientemente y podría estar estancado.
+   * 
+   * @private
+   * @returns {void}
+   */
+  _startStallCheck() {
+    this._stopStallCheck(); // Asegurar limpieza previa
+
+    log.debug(`[StallDetector] Iniciando detector para descarga ${this.downloadId}`);
+    this.stallCheckInterval = setInterval(() => {
+      this._checkStalledChunks();
+    }, 10000); // Verificar cada 10 segundos
+  }
+
+  /**
+   * Detiene el detector de chunks estancados
+   * @private
+   */
+  /**
+   * Detiene el detector de chunks estancados
+   * 
+   * Limpia el intervalo de verificación para liberar recursos.
+   * 
+   * @private
+   * @returns {void}
+   */
+  _stopStallCheck() {
+    if (this.stallCheckInterval) {
+      clearInterval(this.stallCheckInterval);
+      this.stallCheckInterval = null;
+      log.debug(`[StallDetector] Detenido detector para descarga ${this.downloadId}`);
+    }
+  }
+
+  /**
+   * Verifica si hay chunks activos que no han reportado progreso recientemente
+   * @private
+   */
+  /**
+   * Verifica si hay chunks activos que no han reportado progreso recientemente
+   * 
+   * Identifica chunks que pueden estar estancados (stalled) y los reinicia
+   * para recuperar la descarga. Se ejecuta periódicamente mientras la descarga está activa.
+   * 
+   * @private
+   * @returns {void}
+   */
+  _checkStalledChunks() {
+    // Solo verificar si estamos descargando activamente y no estamos en medio de un merge
+    if (this.isAborted || this.state !== 'downloading' || this.mergeInProgress) {
+      return;
+    }
+
+    const now = Date.now();
+    const STALL_THRESHOLD = 20000; // 20 segundos sin actividad = estancado
+    let stalledCount = 0;
+
+    this.activeChunks.forEach((chunk, index) => {
+      // Un chunk está estancado si:
+      // 1. Está en la lista de activos
+      // 2. Han pasado más de STALL_THRESHOLD ms desde su último progreso
+      // 3. No está completado
+      const lastActivity = chunk.lastUpdate || chunk.startTime || now;
+      const timeSinceLastUpdate = now - lastActivity;
+
+      if (timeSinceLastUpdate > STALL_THRESHOLD && chunk.state !== ChunkState.COMPLETED) {
+        log.warn(
+          `[StallDetector] Chunk ${index} estancado detectado (${(timeSinceLastUpdate / 1000).toFixed(1)}s sin actividad). Reiniciando conexión...`
+        );
+
+        stalledCount++;
+
+        // 1. Abortar la conexión actual del chunk
+        chunk.abort(true); // Mantener el archivo temporal para reanudar
+
+        // 2. Remover de la lista de activos del manager
+        this.activeChunks.delete(index);
+
+        // 3. Marcar como pausado para que el bucle de control lo recoja
+        chunk.state = ChunkState.PAUSED;
+      }
+    });
+
+    if (stalledCount > 0) {
+      log.info(`[StallDetector] Re-lanzando ${stalledCount} chunks estancados...`);
+      this._startPendingChunks();
+    }
+  }
+
+  /**
    * Ajusta la concurrencia dinámicamente basado en rendimiento y backpressure
+   */
+  /**
+   * Ajusta dinámicamente el nivel de concurrencia basado en el rendimiento
+   * 
+   * Analiza el rendimiento de los chunks activos (velocidad, backpressure) y ajusta
+   * el número máximo de chunks concurrentes para optimizar la velocidad de descarga.
+   * 
+   * @private
+   * @returns {void}
    */
   _adjustConcurrency() {
     if (!this.adaptiveConcurrency) return;
@@ -837,6 +1046,7 @@ class ChunkedDownloader {
     log.info(`Iniciando descarga fragmentada: ${this.title}`);
     this.state = 'downloading';
     this.startTime = Date.now();
+    this.lastUpdate = Date.now(); // Inicializar lastUpdate al iniciar
     this.isAborted = false;
 
     try {
@@ -852,6 +1062,9 @@ class ChunkedDownloader {
       // IMPORTANTE: Enviar progreso inicial con todos los chunks
       // Esto asegura que el frontend vea todos los chunks desde el inicio
       this._sendInitialProgress();
+
+      // INICIAR: Detector de chunks estancados (zombies)
+      this._startStallCheck();
 
       return true;
     } catch (error) {
@@ -1222,30 +1435,41 @@ class ChunkedDownloader {
   }
 
   /**
-   * Calcula y envía el progreso actualizado de todos los chunks
-   * Este método se puede llamar directamente o desde _onChunkProgress
+   * Calcula el progreso total de todos los chunks
+   * @private
+   * @returns {Object} Objeto con totalDownloaded y overallProgress
    */
-  _sendProgressUpdate() {
-    if (this.isAborted) return;
-
-    // Calcular progreso total usando los datos ACTUALIZADOS de los chunks
+  _calculateTotalProgress() {
     const totalDownloaded = this.chunks.reduce((sum, c) => sum + (c.downloadedBytes || 0), 0);
     const overallProgress = this.totalBytes > 0 ? totalDownloaded / this.totalBytes : 0;
+    return { totalDownloaded, overallProgress };
+  }
 
-    this.progressBatcher.queueProgressUpdate(this.downloadId, overallProgress, totalDownloaded);
-
-    // Calcular velocidad total (suma de velocidades de chunks activos)
+  /**
+   * Calcula la velocidad total sumando las velocidades de todos los chunks activos
+   * @private
+   * @returns {number} Velocidad total en bytes/segundo
+   */
+  _calculateTotalSpeed() {
     let totalSpeed = 0;
     for (const [chunkIndex, activeChunk] of this.activeChunks.entries()) {
       if (activeChunk && activeChunk.speed) {
         totalSpeed += activeChunk.speed;
       }
     }
+    return totalSpeed;
+  }
 
+  /**
+   * Calcula el progreso individual de cada chunk y retorna un array con información detallada
+   * @private
+   * @returns {Array<Object>} Array con información de progreso de cada chunk
+   */
+  _calculateChunkProgress() {
     // IMPORTANTE: Incluir TODOS los chunks en chunkProgress, no solo los activos
     // Esto asegura que el frontend vea todos los chunks desde el inicio
     // Usar los datos ACTUALIZADOS de cada chunk
-    const chunkProgress = this.chunks.map(c => {
+    return this.chunks.map(c => {
       const chunkSize = c.endByte - c.startByte + 1;
 
       // IMPORTANTE: Si el chunk está completado, el progreso debe ser exactamente 1.0 (100%)
@@ -1283,6 +1507,24 @@ class ChunkedDownloader {
                 : 'pending',
       };
     });
+  }
+
+  /**
+   * Calcula y envía el progreso actualizado de todos los chunks
+   * Este método se puede llamar directamente o desde _onChunkProgress
+   */
+  _sendProgressUpdate() {
+    if (this.isAborted) return;
+
+    // Calcular progreso total usando helper
+    const { totalDownloaded, overallProgress } = this._calculateTotalProgress();
+    this.progressBatcher.queueProgressUpdate(this.downloadId, overallProgress, totalDownloaded);
+
+    // Calcular velocidad total usando helper
+    const totalSpeed = this._calculateTotalSpeed();
+
+    // Calcular progreso individual de chunks usando helper
+    const chunkProgress = this._calculateChunkProgress();
 
     // Calcular tiempo restante (remainingTime)
     // totalSpeed está en bytes/segundo (suma de velocidades de chunks activos)
@@ -1315,57 +1557,14 @@ class ChunkedDownloader {
   _sendInitialProgress() {
     if (this.isAborted || this.chunks.length === 0) return;
 
-    // Calcular progreso total
-    const totalDownloaded = this.chunks.reduce((sum, c) => sum + c.downloadedBytes, 0);
-    const overallProgress = this.totalBytes > 0 ? totalDownloaded / this.totalBytes : 0;
+    // Calcular progreso total usando helper
+    const { totalDownloaded, overallProgress } = this._calculateTotalProgress();
 
-    // Calcular velocidad total (suma de velocidades de chunks activos)
-    let totalSpeed = 0;
-    for (const [chunkIndex, activeChunk] of this.activeChunks.entries()) {
-      if (activeChunk && activeChunk.speed) {
-        totalSpeed += activeChunk.speed;
-      }
-    }
+    // Calcular velocidad total usando helper
+    const totalSpeed = this._calculateTotalSpeed();
 
-    // Incluir TODOS los chunks en chunkProgress, no solo los activos
-    const chunkProgress = this.chunks.map(c => {
-      const chunkSize = c.endByte - c.startByte + 1;
-
-      // IMPORTANTE: Si el chunk está completado, el progreso debe ser exactamente 1.0 (100%)
-      // Esto evita problemas de redondeo que pueden causar que muestre 96% en lugar de 100%
-      let progress;
-      if (c.state === ChunkState.COMPLETED) {
-        // Chunk completado: progreso exacto al 100%
-        progress = 1.0;
-        // Asegurar que downloadedBytes sea exactamente igual al tamaño del chunk
-        c.downloadedBytes = chunkSize;
-      } else if (chunkSize > 0) {
-        // Chunk en progreso: calcular progreso normalmente pero limitar a 1.0
-        progress = Math.min(1.0, c.downloadedBytes / chunkSize);
-      } else {
-        progress = 0;
-      }
-
-      // Si el chunk está activo, usar su velocidad actual; si no, 0
-      const isActive = this.activeChunks.has(c.chunkIndex);
-      const speed = isActive && c.speed ? c.speed / (1024 * 1024) : 0; // MB/s
-
-      return {
-        index: c.chunkIndex,
-        progress: progress,
-        speed: speed,
-        downloadedBytes: c.downloadedBytes,
-        totalBytes: chunkSize,
-        state:
-          c.state === ChunkState.COMPLETED
-            ? 'completed'
-            : isActive
-              ? 'active'
-              : c.downloadedBytes > 0
-                ? 'resumed'
-                : 'pending',
-      };
-    });
+    // Calcular progreso individual de chunks usando helper
+    const chunkProgress = this._calculateChunkProgress();
 
     // Contar chunks completados
     const completedChunks = this.chunks.filter(c => c.state === ChunkState.COMPLETED).length;
@@ -1392,8 +1591,18 @@ class ChunkedDownloader {
   async _onChunkComplete(chunk) {
     log.info(`Chunk ${chunk.chunkIndex} completado`);
 
+    // CRÍTICO: Actualizar lastUpdate para que el sistema de limpieza sepa que hay actividad
+    this.lastUpdate = Date.now();
+
     // Flush pendientes de este chunk antes de marcar completado
     await this.progressBatcher.flushDownload(this.downloadId);
+
+    // CRÍTICO: Asegurar que el estado del chunk en memoria esté actualizado
+    // Esto evita condiciones de carrera donde el estado no se sincroniza correctamente
+    if (chunk.state !== ChunkState.COMPLETED) {
+      log.warn(`Chunk ${chunk.chunkIndex}: estado no estaba COMPLETED (era ${chunk.state}), corrigiendo...`);
+      chunk.state = ChunkState.COMPLETED;
+    }
 
     // Actualizar BD
     queueDatabase.updateChunk(this.downloadId, chunk.chunkIndex, {
@@ -1404,59 +1613,69 @@ class ChunkedDownloader {
     // Actualizar contadores
     this.completedChunks++;
     this.activeChunks.delete(chunk.chunkIndex);
+    
+    // CRÍTICO: Verificar que el chunk en this.chunks también tenga el estado correcto
+    const chunkInArray = this.chunks.find(c => c.chunkIndex === chunk.chunkIndex);
+    if (chunkInArray && chunkInArray.state !== ChunkState.COMPLETED) {
+      log.warn(`Chunk ${chunk.chunkIndex} en array: estado no estaba COMPLETED (era ${chunkInArray.state}), corrigiendo...`);
+      chunkInArray.state = ChunkState.COMPLETED;
+    }
+    
+    // CRÍTICO: Si todos los chunks están completados según el contador, verificar inmediatamente
+    if (this.completedChunks >= this.chunks.length && this.activeChunks.size === 0) {
+      log.debug(`Todos los chunks completados según contador (${this.completedChunks}/${this.chunks.length}), preparando actualización final y fusión...`);
+      
+      // IMPORTANTE: Primero calculamos y enviamos la actualización del 100% de todos los chunks
+      const totalDownloaded = this.chunks.reduce((sum, c) => sum + c.downloadedBytes, 0);
+      const overallProgress = 1.0; // Forzar 100%
+      
+      const finalChunkProgress = this.chunks.map(c => ({
+        index: c.chunkIndex,
+        progress: 1.0,
+        speed: 0,
+        downloadedBytes: c.endByte - c.startByte + 1,
+        totalBytes: c.endByte - c.startByte + 1,
+        state: 'completed'
+      }));
+
+      this.onProgress({
+        downloadId: this.downloadId,
+        state: 'progressing',
+        percent: 1.0,
+        downloadedBytes: totalDownloaded,
+        totalBytes: this.totalBytes,
+        speed: 0,
+        activeChunks: 0,
+        completedChunks: this.chunks.length,
+        totalChunks: this.chunks.length,
+        chunkProgress: finalChunkProgress,
+        chunked: true,
+        forceImmediate: true, // Forzar envío inmediato
+      });
+
+      // Ahora sí, iniciamos la fusión
+      setImmediate(() => {
+        if (!this.isAborted && !this.mergeInProgress) {
+          const allCompletedNow = this.chunks.every(c => c.state === ChunkState.COMPLETED);
+          if (allCompletedNow) {
+            log.info(`Iniciando fusión final (${this.completedChunks}/${this.chunks.length})`);
+            this._mergeChunks();
+          }
+        }
+      });
+      return; 
+    }
 
     // IMPORTANTE: Enviar progreso actualizado cuando un chunk se completa
     // Esto asegura que el frontend vea inmediatamente que el chunk se completó
-    const totalDownloaded = this.chunks.reduce((sum, c) => sum + c.downloadedBytes, 0);
-    const overallProgress = this.totalBytes > 0 ? totalDownloaded / this.totalBytes : 0;
+    // Calcular progreso total usando helper
+    const { totalDownloaded, overallProgress } = this._calculateTotalProgress();
 
-    // Calcular velocidad total (suma de velocidades de chunks activos)
-    let totalSpeed = 0;
-    for (const [chunkIndex, activeChunk] of this.activeChunks.entries()) {
-      if (activeChunk && activeChunk.speed) {
-        totalSpeed += activeChunk.speed;
-      }
-    }
+    // Calcular velocidad total usando helper
+    const totalSpeed = this._calculateTotalSpeed();
 
-    // Incluir TODOS los chunks en chunkProgress, con el chunk completado marcado como completado
-    const chunkProgress = this.chunks.map(c => {
-      const chunkSize = c.endByte - c.startByte + 1;
-
-      // IMPORTANTE: Si el chunk está completado, el progreso debe ser exactamente 1.0 (100%)
-      // Esto evita problemas de redondeo que pueden causar que muestre 96% en lugar de 100%
-      let progress;
-      if (c.state === ChunkState.COMPLETED) {
-        // Chunk completado: progreso exacto al 100%
-        progress = 1.0;
-        // Asegurar que downloadedBytes sea exactamente igual al tamaño del chunk
-        c.downloadedBytes = chunkSize;
-      } else if (chunkSize > 0) {
-        // Chunk en progreso: calcular progreso normalmente pero limitar a 1.0
-        progress = Math.min(1.0, c.downloadedBytes / chunkSize);
-      } else {
-        progress = 0;
-      }
-
-      // Si el chunk está activo, usar su velocidad actual; si no, 0
-      const isActive = this.activeChunks.has(c.chunkIndex);
-      const speed = isActive && c.speed ? c.speed / (1024 * 1024) : 0; // MB/s
-
-      return {
-        index: c.chunkIndex,
-        progress: progress,
-        speed: speed,
-        downloadedBytes: c.downloadedBytes,
-        totalBytes: chunkSize,
-        state:
-          c.state === ChunkState.COMPLETED
-            ? 'completed'
-            : isActive
-              ? 'active'
-              : c.downloadedBytes > 0
-                ? 'resumed'
-                : 'pending',
-      };
-    });
+    // Calcular progreso individual de chunks usando helper
+    const chunkProgress = this._calculateChunkProgress();
 
     // Enviar progreso actualizado
     // IMPORTANTE: Marcar como forceImmediate cuando un chunk se completa para asegurar
@@ -1476,13 +1695,206 @@ class ChunkedDownloader {
       forceImmediate: true, // Forzar envío inmediato cuando un chunk se completa
     });
 
-    // Verificar si todos los chunks están completados
-    const allCompleted = this.chunks.every(c => c.state === ChunkState.COMPLETED);
+    // CRÍTICO: Verificación robusta de completado de todos los chunks
+    // Usar múltiples métodos para evitar condiciones de carrera
+    const checkAllCompleted = () => {
+      // Método 1: Verificar estado en memoria
+      const allCompletedByState = this.chunks.every(c => c.state === ChunkState.COMPLETED);
+      
+      // Método 2: Verificar contador de chunks completados
+      const allCompletedByCount = this.completedChunks >= this.chunks.length;
+      
+      // Método 3: Verificar que no hay chunks activos y todos están completados
+      const allCompletedByActive = this.activeChunks.size === 0 && this.completedChunks >= this.chunks.length;
+      
+      // Método 4: Verificar archivos físicos (más confiable pero más lento)
+      let allCompletedByFiles = true;
+      let incompleteChunksInfo = [];
+      try {
+        for (const c of this.chunks) {
+          const expectedSize = c.endByte - c.startByte + 1;
+          if (c.tempFile && fs.existsSync(c.tempFile)) {
+            const stats = fs.statSync(c.tempFile);
+            if (stats.size < expectedSize * 0.99) {
+              // Archivo incompleto (con tolerancia del 1%)
+              allCompletedByFiles = false;
+              incompleteChunksInfo.push(`chunk ${c.chunkIndex}: archivo ${stats.size}/${expectedSize} bytes`);
+              break;
+            }
+          } else if (c.state !== ChunkState.COMPLETED) {
+            // Archivo no existe y chunk no está completado
+            allCompletedByFiles = false;
+            incompleteChunksInfo.push(`chunk ${c.chunkIndex}: sin archivo temporal, estado=${c.state}`);
+            break;
+          }
+        }
+      } catch (e) {
+        // Si hay error verificando archivos, confiar en los otros métodos
+        log.debug(`Error verificando archivos de chunks: ${e.message}`);
+      }
+      
+      // Si al menos 3 de los 4 métodos confirman que están completados, proceder
+      const completionChecks = [
+        allCompletedByState,
+        allCompletedByCount,
+        allCompletedByActive,
+        allCompletedByFiles,
+      ].filter(Boolean).length;
+      
+      // Información de depuración detallada
+      const stateInfo = this.chunks.map(c => `chunk ${c.chunkIndex}: ${c.state}`).join(', ');
+      log.debug(
+        `Verificación de completado: estado=${allCompletedByState}, count=${allCompletedByCount} (${this.completedChunks}/${this.chunks.length}), active=${allCompletedByActive} (${this.activeChunks.size} activos), files=${allCompletedByFiles}, checks=${completionChecks}/4`
+      );
+      
+      // Si la verificación falla, mostrar información detallada
+      if (completionChecks < 3) {
+        log.debug(`Estados de chunks: [${stateInfo}]`);
+        if (incompleteChunksInfo.length > 0) {
+          log.debug(`Chunks incompletos por archivos: ${incompleteChunksInfo.join(', ')}`);
+        }
+        if (!allCompletedByState) {
+          const incompleteStates = this.chunks
+            .filter(c => c.state !== ChunkState.COMPLETED)
+            .map(c => `chunk ${c.chunkIndex}: ${c.state}`);
+          log.debug(`Chunks con estado incompleto: ${incompleteStates.join(', ')}`);
+        }
+      }
+      
+      // Requerir al menos 3 de 4 verificaciones positivas para evitar falsos positivos
+      // PERO: Si el contador dice que todos están completados y no hay chunks activos,
+      // forzar la verificación incluso si el estado en memoria no está sincronizado
+      if (allCompletedByCount && allCompletedByActive && this.completedChunks === this.chunks.length) {
+        log.info(`Todos los chunks completados según contador (${this.completedChunks}/${this.chunks.length}) y sin chunks activos, forzando verificación...`);
+        // Sincronizar estados de chunks que puedan estar desincronizados
+        let needsSync = false;
+        for (const c of this.chunks) {
+          if (c.state !== ChunkState.COMPLETED) {
+            log.warn(`Chunk ${c.chunkIndex}: sincronizando estado a COMPLETED (era ${c.state})`);
+            c.state = ChunkState.COMPLETED;
+            needsSync = true;
+          }
+        }
+        if (needsSync) {
+          // Recalcular verificación después de sincronizar
+          const allCompletedByStateNow = this.chunks.every(c => c.state === ChunkState.COMPLETED);
+          if (allCompletedByStateNow) {
+            log.info(`Estados sincronizados, todos los chunks están COMPLETED`);
+            return true;
+          }
+        } else {
+          // Si el contador y los chunks activos confirman, proceder
+          return true;
+        }
+      }
+      
+      return completionChecks >= 3;
+    };
+
+    const allCompleted = checkAllCompleted();
 
     if (allCompleted) {
-      log.info(`Todos los chunks completados, iniciando fusión`);
+      log.info(`Todos los chunks completados (${this.completedChunks}/${this.chunks.length}), iniciando fusión`);
       this._mergeChunks();
     } else {
+      // CRÍTICO: Timeout de seguridad para detectar cuando todos los chunks están completados
+      // pero la verificación inicial falló debido a condiciones de carrera
+      // Usar timeout más corto (500ms) para detectar problemas más rápido
+      if (!this.completionCheckTimeout) {
+        this.completionCheckTimeout = setTimeout(() => {
+          if (this.isAborted || this.mergeInProgress) {
+            this.completionCheckTimeout = null;
+            return;
+          }
+          
+          log.debug(`Verificación de seguridad: revisando si todos los chunks están completados...`);
+          const allCompletedNow = checkAllCompleted();
+          
+          if (allCompletedNow && !this.mergeInProgress) {
+            log.info(`Todos los chunks completados detectados por timeout de seguridad (${this.completedChunks}/${this.chunks.length}), iniciando fusión`);
+            this._mergeChunks();
+            this.completionCheckTimeout = null;
+            return;
+          }
+          
+          // Si aún no están todos completados, verificar progreso
+          const totalDownloaded = this.chunks.reduce((sum, c) => sum + (c.downloadedBytes || 0), 0);
+          const progress = this.totalBytes > 0 ? totalDownloaded / this.totalBytes : 0;
+          
+          // CRÍTICO: Si el progreso está muy alto (99%+) y no hay chunks activos,
+          // es muy probable que todos los chunks estén completados pero la verificación falló
+          if (progress >= 0.99 && this.activeChunks.size === 0 && !this.mergeInProgress) {
+            log.warn(`Progreso al ${(progress * 100).toFixed(1)}% sin chunks activos, forzando verificación de archivos...`);
+            
+            // Verificar archivos físicos más estrictamente
+            let allFilesComplete = true;
+            let incompleteChunks = [];
+            
+            for (const c of this.chunks) {
+              const expectedSize = c.endByte - c.startByte + 1;
+              if (c.tempFile && fs.existsSync(c.tempFile)) {
+                const stats = fs.statSync(c.tempFile);
+                if (stats.size < expectedSize * 0.99) {
+                  allFilesComplete = false;
+                  incompleteChunks.push({ index: c.chunkIndex, size: stats.size, expected: expectedSize });
+                  log.warn(`Chunk ${c.chunkIndex} incompleto: ${stats.size}/${expectedSize} bytes`);
+                }
+              } else if (c.state !== ChunkState.COMPLETED) {
+                allFilesComplete = false;
+                incompleteChunks.push({ index: c.chunkIndex, reason: 'sin archivo temporal' });
+                log.warn(`Chunk ${c.chunkIndex} sin archivo temporal`);
+              }
+            }
+            
+            if (allFilesComplete && !this.mergeInProgress) {
+              log.info(`Todos los archivos de chunks están completos, iniciando fusión`);
+              // Actualizar estados de chunks que puedan estar desincronizados
+              this.chunks.forEach(c => {
+                if (c.state !== ChunkState.COMPLETED) {
+                  c.state = ChunkState.COMPLETED;
+                  queueDatabase.updateChunk(this.downloadId, c.chunkIndex, {
+                    downloadedBytes: c.endByte - c.startByte + 1,
+                    state: ChunkState.COMPLETED,
+                  });
+                }
+              });
+              this.completedChunks = this.chunks.length;
+              this._mergeChunks();
+            } else if (incompleteChunks.length > 0) {
+              log.warn(`Chunks incompletos detectados: ${incompleteChunks.map(c => c.index).join(', ')}`);
+              // Reiniciar chunks incompletos
+              incompleteChunks.forEach(({ index }) => {
+                const chunk = this.chunks[index];
+                if (chunk && chunk.state !== ChunkState.DOWNLOADING) {
+                  chunk.state = ChunkState.PENDING;
+                  this._startPendingChunks();
+                }
+              });
+            }
+          }
+          
+          // CRÍTICO: Si después de 2 segundos aún no se inició el merge y todos los chunks
+          // parecen estar completados, programar otra verificación más agresiva
+          if (!this.mergeInProgress && this.completedChunks >= this.chunks.length && this.activeChunks.size === 0) {
+            log.warn(`Todos los chunks parecen completados pero el merge no se inició, programando verificación adicional...`);
+            // Programar otra verificación más agresiva en 1 segundo adicional
+            setTimeout(() => {
+              if (!this.mergeInProgress && !this.isAborted) {
+                const finalCheck = checkAllCompleted();
+                if (finalCheck) {
+                  log.warn(`Verificación final: todos los chunks completados, forzando inicio de merge`);
+                  this._mergeChunks();
+                } else {
+                  log.error(`Verificación final falló: estado=${this.chunks.every(c => c.state === ChunkState.COMPLETED)}, count=${this.completedChunks}/${this.chunks.length}, active=${this.activeChunks.size}`);
+                }
+              }
+            }, 1000);
+          }
+          
+          this.completionCheckTimeout = null;
+        }, 500); // Verificar después de 500ms para detectar problemas más rápido
+      }
+      
       // Iniciar más chunks si hay disponibles
       this._startPendingChunks();
     }
@@ -1599,6 +2011,13 @@ class ChunkedDownloader {
    */
   async _mergeChunks() {
     if (this.mergeInProgress) return;
+    
+    // CRÍTICO: Limpiar timeout de verificación de completado antes de iniciar merge
+    if (this.completionCheckTimeout) {
+      clearTimeout(this.completionCheckTimeout);
+      this.completionCheckTimeout = null;
+    }
+    
     this.mergeInProgress = true;
     this.state = 'merging';
 
@@ -1709,9 +2128,17 @@ class ChunkedDownloader {
               break;
 
             case 'complete':
-              log.info(
-                `Fusión completada: ${message.formatBytes} en ${message.duration.toFixed(2)}s (${message.formatSpeed})`
-              );
+              clearWorkerTimeout();
+              log.info('Fusión de chunks completada', {
+                downloadId: this.downloadId,
+                savePath: this.savePath,
+                totalBytes: message.totalBytes,
+                formatBytes: message.formatBytes,
+                duration: message.duration.toFixed(2),
+                formatSpeed: message.formatSpeed,
+                totalChunks: message.totalChunks || this.chunks.length,
+                timestamp: Date.now(),
+              });
 
               // IMPORTANTE: Enviar actualización final al 100% antes de cambiar el estado
               // Esto asegura que el frontend vea el progreso completo antes de 'completed'
@@ -1785,13 +2212,28 @@ class ChunkedDownloader {
               break;
 
             case 'error':
-              log.error('Error en worker de merge:', message.error);
+              clearWorkerTimeout();
+              log.error('Error en worker de merge', {
+                downloadId: this.downloadId,
+                savePath: this.savePath,
+                error: message.error?.message || 'Error desconocido',
+                stack: message.error?.stack,
+                code: message.error?.code,
+                totalBytes: this.totalBytes,
+                chunksCount: this.chunks.length,
+                timestamp: Date.now(),
+              });
               this._cleanupMergeWorker();
               this.state = 'failed';
               this.mergeInProgress = false;
 
-              const error = new Error(message.error.message);
-              error.stack = message.error.stack;
+              const error = new Error(message.error?.message || 'Error desconocido en worker de merge');
+              if (message.error?.stack) {
+                error.stack = message.error.stack;
+              }
+              if (message.error?.code) {
+                error.code = message.error.code;
+              }
               this.onError(this, error);
               reject(error);
               break;
@@ -1815,9 +2257,46 @@ class ChunkedDownloader {
           }
         });
 
+        // CRÍTICO: Manejar errores del worker con timeout de seguridad
+        let workerErrorTimeout = null;
+        const WORKER_ERROR_TIMEOUT_MS = 30000; // 30 segundos
+
+        // Timeout de seguridad: si el worker no responde en 30 segundos, considerarlo fallido
+        workerErrorTimeout = setTimeout(() => {
+          if (this.mergeInProgress && this.mergeWorker) {
+            log.error('Worker de merge no responde después de 30 segundos, forzando fallo', {
+              downloadId: this.downloadId,
+              savePath: this.savePath,
+              totalBytes: this.totalBytes,
+              chunksCount: this.chunks.length,
+            });
+            this._cleanupMergeWorker();
+            this.state = 'failed';
+            this.mergeInProgress = false;
+            const timeoutError = new Error('Worker de merge no respondió en el tiempo esperado (timeout de 30s)');
+            this.onError(this, timeoutError);
+            reject(timeoutError);
+          }
+        }, WORKER_ERROR_TIMEOUT_MS);
+
+        // Limpiar timeout cuando se recibe respuesta exitosa
+        const clearWorkerTimeout = () => {
+          if (workerErrorTimeout) {
+            clearTimeout(workerErrorTimeout);
+            workerErrorTimeout = null;
+          }
+        };
+
         // Manejar errores del worker
         this.mergeWorker.on('error', error => {
-          log.error('Error en worker thread:', error);
+          clearWorkerTimeout();
+          log.error('Error en worker thread de merge', {
+            downloadId: this.downloadId,
+            error: error.message,
+            stack: error.stack,
+            code: error.code,
+            savePath: this.savePath,
+          });
           this._cleanupMergeWorker();
           this.state = 'failed';
           this.mergeInProgress = false;
@@ -1827,8 +2306,14 @@ class ChunkedDownloader {
 
         // Manejar salida del worker
         this.mergeWorker.on('exit', code => {
+          clearWorkerTimeout();
           if (code !== 0 && this.mergeInProgress) {
-            log.error(`Worker terminó con código ${code}`);
+            log.error('Worker de merge terminó con código de error', {
+              downloadId: this.downloadId,
+              exitCode: code,
+              savePath: this.savePath,
+              mergeInProgress: this.mergeInProgress,
+            });
             this._cleanupMergeWorker();
             this.state = 'failed';
             this.mergeInProgress = false;
@@ -1836,6 +2321,13 @@ class ChunkedDownloader {
             const error = new Error(`Worker terminó inesperadamente con código ${code}`);
             this.onError(this, error);
             reject(error);
+          } else if (code === 0 && this.mergeInProgress) {
+            // Worker terminó exitosamente pero el merge aún está marcado como en progreso
+            // Esto puede indicar que el mensaje 'complete' no se recibió
+            log.warn('Worker terminó exitosamente pero merge aún en progreso', {
+              downloadId: this.downloadId,
+              savePath: this.savePath,
+            });
           }
         });
 
@@ -1848,7 +2340,17 @@ class ChunkedDownloader {
           downloadId: this.downloadId,
         });
       } catch (error) {
-        log.error('Error iniciando worker de merge:', error);
+        clearWorkerTimeout();
+        log.error('Error iniciando worker de merge', {
+          downloadId: this.downloadId,
+          savePath: this.savePath,
+          error: error.message,
+          stack: error.stack,
+          code: error.code,
+          totalBytes: this.totalBytes,
+          chunksCount: this.chunks.length,
+          timestamp: Date.now(),
+        });
         this._cleanupMergeWorker();
         this.state = 'failed';
         this.mergeInProgress = false;
@@ -2061,6 +2563,15 @@ class ChunkedDownloader {
     this.isAborted = true;
     this.state = 'paused';
 
+    // Detener detector de estancamiento
+    this._stopStallCheck();
+
+    // CRÍTICO: Limpiar timeout de verificación de completado
+    if (this.completionCheckTimeout) {
+      clearTimeout(this.completionCheckTimeout);
+      this.completionCheckTimeout = null;
+    }
+
     // Pausar todos los chunks activos
     this.activeChunks.forEach(chunk => {
       chunk.pause();
@@ -2134,6 +2645,15 @@ class ChunkedDownloader {
     this.isAborted = true;
     this.state = 'cancelled';
 
+    // Detener detector de estancamiento
+    this._stopStallCheck();
+
+    // CRÍTICO: Limpiar timeout de verificación de completado
+    if (this.completionCheckTimeout) {
+      clearTimeout(this.completionCheckTimeout);
+      this.completionCheckTimeout = null;
+    }
+
     // Cancelar merge si está en progreso
     if (this.mergeInProgress && this.mergeWorker) {
       this._cleanupMergeWorker();
@@ -2183,6 +2703,15 @@ class ChunkedDownloader {
    * Destruye la instancia y libera recursos
    */
   destroy() {
+    // Detener detector de estancamiento
+    this._stopStallCheck();
+
+    // CRÍTICO: Limpiar timeout de verificación de completado
+    if (this.completionCheckTimeout) {
+      clearTimeout(this.completionCheckTimeout);
+      this.completionCheckTimeout = null;
+    }
+    
     this.cancel(true); // Mantener archivos por si se quiere reanudar
     this.chunks = [];
 
@@ -2265,10 +2794,16 @@ class ChunkedDownloader {
       );
       request.setHeader('Range', 'bytes=0-0');
 
+      // CRÍTICO: Usar timeout configurado en lugar de valor hardcodeado
+      const timeoutMs =
+        config.downloads?.chunked?.rangeSupportTimeout ||
+        config.network?.timeout ||
+        config.network?.responseTimeout ||
+        10000; // 10 segundos como fallback
       const timeout = setTimeout(() => {
         request.abort();
         resolve({ supported: false, error: 'timeout' });
-      }, 10000);
+      }, timeoutMs);
 
       request.on('response', response => {
         clearTimeout(timeout);

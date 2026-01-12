@@ -73,8 +73,10 @@
       role="region"
       aria-label="Lista de descargas"
       :style="{
-        height: shouldVirtualize ? '600px' : 'auto',
-        overflow: shouldVirtualize ? 'auto' : 'visible',
+        height: shouldVirtualize || needsFixedHeight ? '600px' : 'auto',
+        maxHeight: '600px',
+        overflowY: 'auto',
+        overflowX: 'auto',
       }"
       @scroll="handleScroll"
     >
@@ -296,8 +298,10 @@
             </td>
             <td
               class="download-path"
+              :class="{ 'clickable': hasValidPath(download), 'no-path': !hasValidPath(download) }"
               data-label="Ubicación"
-              :title="download.savePath"
+              :title="getPathForTitle(download)"
+              @click.stop="handlePathClick(download)"
             >
               {{ getDirectoryPath(download.savePath) }}
             </td>
@@ -566,6 +570,12 @@ const columnCount = computed(() => {
   return count;
 });
 
+// Computed: Determinar si necesitamos altura fija para scroll
+// Si hay más de 10 elementos, necesitamos altura fija para permitir scroll
+const needsFixedHeight = computed(() => {
+  return props.downloads.length > 10;
+});
+
 // Virtual Scroll
 const {
   shouldVirtualize,
@@ -683,6 +693,57 @@ const getDirectoryPath = fullPath => {
   if (!fullPath) return '-';
   const lastSep = Math.max(fullPath.lastIndexOf('\\'), fullPath.lastIndexOf('/'));
   return lastSep > 0 ? fullPath.substring(0, lastSep) : fullPath;
+};
+
+// Verificar si la descarga tiene una ruta válida para abrir
+const hasValidPath = (download) => {
+  if (!download) return false;
+  // Solo usar savePath, que es el que se establece cuando la descarga comienza
+  const path = download.savePath;
+  return !!(path && typeof path === 'string' && path.trim() !== '');
+};
+
+// Obtener la ruta para el título (tooltip)
+const getPathForTitle = (download) => {
+  return download.savePath || 'Ubicación no disponible aún';
+};
+
+// Manejar click en la celda de ubicación
+const handlePathClick = (download) => {
+  if (!download) return;
+  
+  // Solo proceder si hay una ruta válida
+  if (!hasValidPath(download)) {
+    return;
+  }
+  
+  openFolder(download);
+};
+
+// Abrir carpeta en el explorador de archivos
+const openFolder = async (download) => {
+  if (!download) {
+    console.warn('[openFolder] Download object no proporcionado');
+    return;
+  }
+  
+  // Usar solo savePath (se establece cuando la descarga comienza)
+  const filePath = download.savePath;
+  
+  // Validar que filePath sea un string válido
+  if (!filePath || typeof filePath !== 'string' || filePath.trim() === '') {
+    return;
+  }
+  
+  try {
+    // Pasar la ruta completa al handler, que extraerá el directorio internamente
+    const result = await window.api.openFolder(filePath);
+    if (!result.success) {
+      console.warn('No se pudo abrir la carpeta:', result.error);
+    }
+  } catch (error) {
+    console.error('Error abriendo carpeta:', error);
+  }
 };
 
 // Obtener estimación de tiempo para una descarga
@@ -1290,6 +1351,22 @@ onUnmounted(() => {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.download-path.clickable {
+  cursor: pointer;
+  color: var(--primary-color, #4a9eff);
+  transition: color 0.2s ease;
+}
+
+.download-path.clickable:hover {
+  color: var(--primary-color-hover, #6bb0ff);
+  text-decoration: underline;
+}
+
+.download-path.no-path {
+  color: #999;
+  cursor: default;
 }
 
 /* Cambiar "Tiempo Estimado" a "ETA" en resoluciones menores a 1280px */

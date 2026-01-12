@@ -36,6 +36,7 @@ import {
   speedStats,
   pendingConfirmations,
   startingDownloads,
+  triggerRef,
 } from './useDownloadState';
 import { MEMORY_LIMITS } from './useDownloadState';
 import * as api from '../../services/api';
@@ -350,6 +351,10 @@ export function useDownloadHistory(settings = null) {
     downloadQueue.value = downloadQueue.value.filter(d => d.id !== downloadId);
     speedStats.value.delete(downloadId);
     pendingConfirmations.value = pendingConfirmations.value.filter(c => c.id !== downloadId);
+    
+    // CRÍTICO: Trigger reactivity for shallowRef
+    triggerRef(downloads);
+    
     saveDownloadHistory();
   };
 

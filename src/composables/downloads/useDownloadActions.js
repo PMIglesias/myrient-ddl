@@ -36,7 +36,7 @@
  * @property {string} [error] - Mensaje de error si falló
  */
 
-import { downloads, downloadQueue, startingDownloads } from './useDownloadState';
+import { downloads, downloadQueue, startingDownloads, triggerRef } from './useDownloadState';
 import * as api from '../../services/api';
 
 /**
@@ -108,22 +108,35 @@ export function useDownloadActions(
   const download = file => {
     if (!file || !file.id) return;
 
+    // Verificar si ya existe en descargas activas o en cola
     const existing = downloads.value[file.id];
+    const isInQueue = downloadQueue.value.some(d => d.id === file.id);
+
     if (existing) {
-      if (['progressing', 'starting', 'queued'].includes(existing.state)) {
-        console.log('[useDownloads] Ya en proceso:', file.title);
+      if (['progressing', 'starting', 'queued', 'merging', 'waiting'].includes(existing.state)) {
+        console.log('[useDownloads] Ya en proceso o cola:', file.title, '(estado:', existing.state, ')');
         return;
       }
     }
 
-    downloads.value[file.id] = {
-      id: file.id,
-      title: file.title,
-      state: 'queued',
-      percent: 0,
-      addedAt: Date.now(),
+    if (isInQueue) {
+      console.log('[useDownloads] Ya en cola:', file.title);
+      return;
+    }
+
+    // Actualizar estado de descargas reemplazando el objeto para asegurar reactividad en componentes hijos
+    downloads.value = {
+      ...downloads.value,
+      [file.id]: {
+        id: file.id,
+        title: file.title,
+        state: 'queued',
+        percent: 0,
+        addedAt: Date.now(),
+      }
     };
 
+    // Agregar a la cola de procesamiento
     if (!downloadQueue.value.some(d => d.id === file.id)) {
       downloadQueue.value.push({
         id: file.id,
@@ -133,7 +146,7 @@ export function useDownloadActions(
       });
     }
 
-    // Limitar historial antes de procesar (por si hay muchas descargas)
+    // Limitar historial antes de procesar
     if (limitHistoryInMemoryFn && getCurrentLimitsFn) {
       limitHistoryInMemoryFn(getCurrentLimitsFn());
     }
@@ -271,9 +284,14 @@ export function useDownloadActions(
     try {
       const result = await api.resumeDownload(downloadId);
       if (result.success) {
-        // Actualizar estado local
-        dl.state = 'queued';
-        delete dl.error;
+        // Actualizar estado local reemplazando el objeto para reactividad
+        const dlCopy = { ...dl, state: 'queued' };
+        delete dlCopy.error;
+
+        downloads.value = {
+          ...downloads.value,
+          [downloadId]: dlCopy
+        };
 
         downloadQueue.value.push({
           id: downloadId,
@@ -363,11 +381,19 @@ export function useDownloadActions(
     try {
       const result = await api.retryDownload(downloadId);
       if (result.success) {
-        // Actualizar estado local
-        dl.state = 'queued';
-        dl.percent = 0;
-        dl.downloadedBytes = 0;
-        delete dl.error;
+        // Actualizar estado local reemplazando el objeto para reactividad
+        const dlCopy = { 
+          ...dl, 
+          state: 'queued',
+          percent: 0,
+          downloadedBytes: 0
+        };
+        delete dlCopy.error;
+
+        downloads.value = {
+          ...downloads.value,
+          [downloadId]: dlCopy
+        };
 
         // Asegurarse de que está en la cola
         if (!downloadQueue.value.some(d => d.id === downloadId)) {

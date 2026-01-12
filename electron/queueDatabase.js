@@ -61,8 +61,8 @@ const fs = require('fs');
 const path = require('path');
 const config = require('./config');
 const { logger } = require('./utils');
-
 const log = logger.child('QueueDB');
+const { getWorkerManager } = require('./utils/dbQueryWorkerManager');
 
 // =====================
 // CONSTANTES
@@ -99,7 +99,10 @@ const DownloadPriority = Object.freeze({
 // SCHEMA SQL
 // =====================
 
+// CRÍTICO: Versión del schema - incrementar cuando se hagan cambios incompatibles
+// Si se cambia, se deben agregar migraciones correspondientes
 const SCHEMA_VERSION = 1;
+const MIN_SUPPORTED_SCHEMA_VERSION = 1; // Versión mínima compatible (para migraciones desde versiones muy antiguas)
 
 const CREATE_TABLES_SQL = `
 -- Tabla principal de descargas
@@ -182,6 +185,26 @@ CREATE INDEX IF NOT EXISTS idx_downloads_created ON downloads(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_chunks_download ON download_chunks(download_id);
 CREATE INDEX IF NOT EXISTS idx_history_download ON download_history(download_id);
 CREATE INDEX IF NOT EXISTS idx_history_created ON download_history(created_at DESC);
+
+-- CRÍTICO: Índices compuestos optimizados para queries frecuentes
+-- Índice parcial para getQueued() - solo descargas en cola
+CREATE INDEX IF NOT EXISTS idx_downloads_queued_optimized 
+  ON downloads(priority DESC, queue_position ASC, created_at ASC)
+  WHERE state = 'queued';
+
+-- Índice para getActive() con started_at
+CREATE INDEX IF NOT EXISTS idx_downloads_active 
+  ON downloads(started_at ASC)
+  WHERE state = 'downloading';
+
+-- Índice compuesto para búsquedas por ID y estado (útil para JOINs y verificaciones)
+CREATE INDEX IF NOT EXISTS idx_downloads_id_state 
+  ON downloads(id, state);
+
+-- Índice para limpieza de historial (optimiza cleanOldHistory)
+CREATE INDEX IF NOT EXISTS idx_downloads_history_cleanup 
+  ON downloads(updated_at DESC)
+  WHERE state IN ('completed', 'failed', 'cancelled');
 `;
 
 // =====================
@@ -227,6 +250,21 @@ class QueueDatabase {
     this.db = null;
     this.statements = null;
     this.isInitialized = false;
+    
+    // CRÍTICO: Batching para actualizaciones de progreso
+    this.progressUpdateQueue = new Map(); // Map<id, {progress, downloadedBytes}>
+    this.progressBatchInterval = 2000; // 2 segundos
+    this.progressBatchTimer = null;
+    
+    // Worker thread para queries pesadas (opcional, con fallback)
+    this.workerManager = getWorkerManager();
+    this.useWorkerForBatches = true; // Habilitar worker para batches grandes
+    this.workerBatchThreshold = 50; // Usar worker si hay más de 50 actualizaciones
+    
+    // CRÍTICO: WAL Checkpoint periódico para evitar crecimiento indefinido
+    this.walCheckpointInterval = null;
+    this.walCheckpointThreshold = 10 * 1024 * 1024; // 10MB - umbral para checkpoint
+    this.walCheckpointIntervalMs = 5 * 60 * 1000; // 5 minutos - intervalo de verificación
   }
 
   // =====================
@@ -278,6 +316,23 @@ class QueueDatabase {
       this.db.pragma('cache_size = -64000'); // 64MB de caché
       this.db.pragma('temp_store = MEMORY'); // Temporales en memoria
       this.db.pragma('foreign_keys = ON'); // Integridad referencial
+      
+      // CRÍTICO: Configurar checkpoint automático del WAL
+      // wal_autocheckpoint = N significa checkpoint automático cada N páginas (default: 1000)
+      // Reducimos a 1000 para checkpoint más frecuente (cada ~4MB con páginas de 4KB)
+      this.db.pragma('wal_autocheckpoint = 1000');
+
+      // Inicializar worker thread para queries pesadas (opcional)
+      if (this.useWorkerForBatches) {
+        this.workerManager.initialize(config.paths.queueDbPath).catch((error) => {
+          log.warn('No se pudo inicializar worker thread, usando modo síncrono:', error.message);
+          this.useWorkerForBatches = false;
+        });
+      }
+      
+      // CRÍTICO: Iniciar checkpoint periódico manual del WAL
+      // Esto complementa el autocheckpoint y asegura que el WAL no crezca indefinidamente
+      this._startWALCheckpointInterval();
 
       // Crear/actualizar schema
       this._initializeSchema();
@@ -299,21 +354,212 @@ class QueueDatabase {
   }
 
   /**
-   * Inicializa el schema de la base de datos
+   * Obtiene la versión actual del schema desde la base de datos
+   * @private
+   * @returns {number|null} Versión del schema o null si no existe
    */
-  _initializeSchema() {
-    log.debug('Verificando schema...');
+  _getCurrentSchemaVersion() {
+    try {
+      // Verificar si la tabla metadata existe
+      const tableExists = this.db
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name='metadata'"
+        )
+        .get();
 
-    // Ejecutar creación de tablas
-    this.db.exec(CREATE_TABLES_SQL);
+      if (!tableExists) {
+        return null; // Tabla no existe, es una base de datos nueva
+      }
 
-    // Verificar/actualizar versión del schema
+      // Obtener versión del schema desde metadata
+      const versionRow = this.db
+        .prepare('SELECT value FROM metadata WHERE key = ?')
+        .get('schema_version');
+
+      if (!versionRow || !versionRow.value) {
+        return null; // No hay versión guardada, probablemente base de datos antigua
+      }
+
+      const version = parseInt(versionRow.value, 10);
+      return isNaN(version) ? null : version;
+    } catch (error) {
+      log.warn('Error obteniendo versión del schema:', error.message);
+      return null;
+    }
+  }
+
+  /**
+   * Establece la versión del schema en la base de datos
+   * @private
+   * @param {number} version - Versión a establecer
+   */
+  _setSchemaVersion(version) {
     const versionStmt = this.db.prepare(
       'INSERT OR REPLACE INTO metadata (key, value, updated_at) VALUES (?, ?, ?)'
     );
-    versionStmt.run('schema_version', String(SCHEMA_VERSION), Date.now());
+    versionStmt.run('schema_version', String(version), Date.now());
+    log.debug('Versión del schema establecida:', version);
+  }
 
-    log.debug('Schema inicializado (versión ' + SCHEMA_VERSION + ')');
+  /**
+   * Obtiene la función de migración para una versión específica
+   * @private
+   * @param {number} version - Versión del schema
+   * @returns {Function|null} Función de migración o null si no hay migración
+   */
+  _getMigration(version) {
+    const migrations = {
+      // Migraciones futuras se agregarán aquí
+      // Ejemplo para versión 2:
+      // 2: (db, log) => {
+      //   log.info('Migrando a versión 2...');
+      //   db.exec('ALTER TABLE downloads ADD COLUMN new_field TEXT;');
+      //   db.exec('CREATE INDEX IF NOT EXISTS idx_downloads_new_field ON downloads(new_field);');
+      // },
+    };
+
+    return migrations[version] || null;
+  }
+
+  /**
+   * Ejecuta migraciones de schema desde una versión a otra
+   * @private
+   * @param {number} fromVersion - Versión actual
+   * @param {number} toVersion - Versión objetivo
+   * @returns {boolean} true si las migraciones fueron exitosas
+   */
+  _migrateSchema(fromVersion, toVersion) {
+    try {
+      log.info('Iniciando migración de schema', {
+        fromVersion,
+        toVersion,
+      });
+
+      // Ejecutar migraciones incrementales
+      for (let version = fromVersion + 1; version <= toVersion; version++) {
+        const migrationFn = this._getMigration(version);
+        if (migrationFn) {
+          log.info(`Ejecutando migración a versión ${version}...`, {
+            fromVersion,
+            toVersion: version,
+          });
+          migrationFn(this.db, log);
+          this._setSchemaVersion(version);
+          log.info(`Migración a versión ${version} completada`);
+        } else {
+          // Si no hay migración específica, asumir que CREATE_TABLES_SQL es suficiente
+          log.warn(`No hay migración específica para versión ${version}, usando schema completo`);
+          this.db.exec(CREATE_TABLES_SQL);
+          this._setSchemaVersion(version);
+        }
+      }
+
+      log.info('Migración de schema completada exitosamente', {
+        finalVersion: toVersion,
+      });
+      return true;
+    } catch (error) {
+      log.error('Error durante migración de schema', {
+        fromVersion,
+        toVersion,
+        error: error.message,
+        stack: error.stack,
+      });
+      return false;
+    }
+  }
+
+  /**
+   * Valida y migra el schema de la base de datos si es necesario
+   * @private
+   * @returns {boolean} true si el schema es válido o se migró exitosamente
+   */
+  _validateAndMigrateSchema() {
+    const currentVersion = this._getCurrentSchemaVersion();
+
+    // Si no hay versión, es una base de datos nueva o muy antigua
+    if (currentVersion === null) {
+      log.info('Base de datos nueva o sin versión, inicializando schema versión', SCHEMA_VERSION);
+      this.db.exec(CREATE_TABLES_SQL);
+      this._setSchemaVersion(SCHEMA_VERSION);
+      return true;
+    }
+
+    log.info('Versión actual del schema detectada', {
+      currentVersion,
+      expectedVersion: SCHEMA_VERSION,
+    });
+
+    // Si la versión es mayor a la esperada, puede ser incompatible
+    if (currentVersion > SCHEMA_VERSION) {
+      log.error(
+        'Incompatibilidad de schema detectada',
+        {
+          currentVersion,
+          expectedVersion: SCHEMA_VERSION,
+          message: `La base de datos es de una versión más nueva (${currentVersion}) que la aplicación espera (${SCHEMA_VERSION}). Actualiza la aplicación.`,
+        }
+      );
+      return false;
+    }
+
+    // Si la versión es menor al mínimo soportado, no se puede migrar
+    if (currentVersion < MIN_SUPPORTED_SCHEMA_VERSION) {
+      log.error(
+        'Schema demasiado antiguo para migrar',
+        {
+          currentVersion,
+          minSupportedVersion: MIN_SUPPORTED_SCHEMA_VERSION,
+          message: `La versión del schema (${currentVersion}) es demasiado antigua. Versión mínima soportada: ${MIN_SUPPORTED_SCHEMA_VERSION}`,
+        }
+      );
+      return false;
+    }
+
+    // Si la versión coincide, solo verificar que las tablas existen
+    if (currentVersion === SCHEMA_VERSION) {
+      log.debug('Schema en versión correcta, verificando tablas...');
+      this.db.exec(CREATE_TABLES_SQL); // Esto es idempotente (CREATE IF NOT EXISTS)
+      return true;
+    }
+
+    // Si la versión es menor pero mayor o igual al mínimo, ejecutar migraciones
+    if (currentVersion < SCHEMA_VERSION) {
+      log.info(
+        'Migración de schema necesaria',
+        {
+          fromVersion: currentVersion,
+          toVersion: SCHEMA_VERSION,
+        }
+      );
+      return this._migrateSchema(currentVersion, SCHEMA_VERSION);
+    }
+
+    return true;
+  }
+
+  /**
+   * Inicializa el schema de la base de datos
+   * CRÍTICO: Valida la versión del schema y ejecuta migraciones si es necesario
+   */
+  _initializeSchema() {
+    log.debug('Inicializando schema...');
+
+    // CRÍTICO: Validar y migrar schema antes de continuar
+    const isValid = this._validateAndMigrateSchema();
+
+    if (!isValid) {
+      throw new Error(
+        `Error validando o migrando schema. La base de datos puede ser incompatible.`
+      );
+    }
+
+    // Asegurar que la versión está actualizada (por si acaso)
+    this._setSchemaVersion(SCHEMA_VERSION);
+
+    log.info('Schema inicializado correctamente', {
+      version: SCHEMA_VERSION,
+    });
   }
 
   /**
@@ -706,11 +952,11 @@ class QueueDatabase {
   }
 
   /**
-   * Actualiza el progreso de una descarga (llamada frecuente, optimizada)
+   * Actualiza el progreso de una descarga usando batching (llamada frecuente, optimizada)
    *
-   * Método optimizado para actualizar solo el progreso y bytes descargados,
-   * usado frecuentemente durante descargas activas. Usa un prepared statement
-   * especializado para mejor rendimiento. No loguea errores para evitar spam.
+   * CRÍTICO: Usa batching para agrupar múltiples actualizaciones y reducir escrituras a disco.
+   * Las actualizaciones se acumulan en memoria y se escriben en batch cada 2 segundos.
+   * Esto previene bloqueos del main thread durante descargas activas.
    *
    * @param {number} id - ID de la descarga a actualizar
    * @param {number} progress - Progreso actual (0.0 - 1.0)
@@ -720,23 +966,133 @@ class QueueDatabase {
    * @example
    * // Actualizar progreso durante descarga (llamado frecuentemente)
    * queueDatabase.updateProgress(12345, 0.5, 50000000);
-   * // Progreso: 50%, bytes descargados: 50MB
+   * // Se agrega a cola de batch, se escribirá en los próximos 2 segundos
    *
    * // Actualizar progreso avanzado
    * queueDatabase.updateProgress(12345, 0.875, 87500000);
-   * // Progreso: 87.5%, bytes descargados: 87.5MB
+   * // Actualiza el valor en la cola de batch
    */
   updateProgress(id, progress, downloadedBytes) {
-    try {
-      this.statements.updateProgress.run({
-        id,
-        progress,
-        downloadedBytes,
-        updatedAt: Date.now(),
-      });
-    } catch (error) {
-      // No loguear errores frecuentes de progreso
+    // Agregar a cola de batch
+    this.progressUpdateQueue.set(id, { progress, downloadedBytes });
+
+    // Iniciar timer si no está activo
+    if (!this.progressBatchTimer) {
+      this.progressBatchTimer = setTimeout(() => {
+        this._flushProgressBatch();
+      }, this.progressBatchInterval);
     }
+  }
+
+  /**
+   * Flush batch de actualizaciones de progreso
+   * Escribe todas las actualizaciones pendientes en una sola transacción
+   * Usa worker thread si hay muchas actualizaciones para no bloquear el main thread
+   *
+   * @private
+   * @returns {void}
+   */
+  async _flushProgressBatch() {
+    if (this.progressUpdateQueue.size === 0) {
+      this.progressBatchTimer = null;
+      return;
+    }
+
+    const updates = Array.from(this.progressUpdateQueue.entries()).map(([id, data]) => ({
+      id,
+      progress: data.progress,
+      downloadedBytes: data.downloadedBytes,
+    }));
+    this.progressUpdateQueue.clear();
+    this.progressBatchTimer = null;
+
+    const updateCount = updates.length;
+    const shouldUseWorker =
+      this.useWorkerForBatches &&
+      updateCount >= this.workerBatchThreshold &&
+      this.workerManager.isInitialized;
+
+    if (shouldUseWorker) {
+      // Usar worker thread para batches grandes
+      try {
+        const result = await this.workerManager.batchUpdateProgress(updates);
+        if (result.success) {
+          log.debug(
+            `Batch de progreso ejecutado en worker: ${result.updated || updateCount} actualizaciones`
+          );
+        } else {
+          throw new Error(result.error || 'Error desconocido en worker');
+        }
+      } catch (error) {
+        // Fallback a modo síncrono si el worker falla
+        log.warn(
+          `Error en worker, usando modo síncrono para ${updateCount} actualizaciones:`,
+          error.message
+        );
+        this._flushProgressBatchSync(updates);
+      }
+    } else {
+      // Usar modo síncrono para batches pequeños o si el worker no está disponible
+      this._flushProgressBatchSync(updates);
+    }
+  }
+
+  /**
+   * Flush batch de actualizaciones de progreso (modo síncrono)
+   * @private
+   * @param {Array<Object>} updates - Array de actualizaciones
+   * @returns {void}
+   */
+  _flushProgressBatchSync(updates) {
+    // Usar transacción para actualizar todas de una vez
+    const transaction = this.db.transaction((updates) => {
+      const stmt = this.statements.updateProgress;
+      const now = Date.now();
+
+      for (const update of updates) {
+        try {
+          stmt.run({
+            id: update.id,
+            progress: update.progress,
+            downloadedBytes: update.downloadedBytes,
+            updatedAt: now,
+          });
+        } catch (error) {
+          // Log pero no fallar toda la transacción
+          log.debug(`Error actualizando progreso de ${update.id}:`, error.message);
+        }
+      }
+    });
+
+    try {
+      transaction(updates);
+      if (updates.length > 0) {
+        log.debug(`Batch de progreso: ${updates.length} actualizaciones escritas`);
+      }
+    } catch (error) {
+      log.error('Error en batch de progreso:', error);
+    }
+
+    // Programar siguiente batch si hay más actualizaciones pendientes
+    if (this.progressUpdateQueue.size > 0) {
+      this.progressBatchTimer = setTimeout(() => {
+        this._flushProgressBatch();
+      }, this.progressBatchInterval);
+    }
+  }
+
+  /**
+   * Force flush de progreso (útil al pausar/completar)
+   * Escribe inmediatamente todas las actualizaciones pendientes
+   *
+   * @returns {void}
+   */
+  flushProgress() {
+    if (this.progressBatchTimer) {
+      clearTimeout(this.progressBatchTimer);
+      this.progressBatchTimer = null;
+    }
+    this._flushProgressBatch();
   }
 
   /**
@@ -1619,12 +1975,26 @@ class QueueDatabase {
    */
   close() {
     if (this.db) {
+      // CRÍTICO: Flush pendientes antes de cerrar
+      this.flushProgress();
+
+      // Detener checkpoint periódico
+      this._stopWALCheckpointInterval();
+
       // Checkpoint WAL antes de cerrar
       this.db.pragma('wal_checkpoint(TRUNCATE)');
       this.db.close();
       this.db = null;
       this.statements = null;
       this.isInitialized = false;
+      
+      // Limpiar timer de batch
+      if (this.progressBatchTimer) {
+        clearTimeout(this.progressBatchTimer);
+        this.progressBatchTimer = null;
+      }
+      this.progressUpdateQueue.clear();
+      
       log.info('QueueDatabase cerrada');
     }
   }
@@ -1632,6 +2002,108 @@ class QueueDatabase {
   // =====================
   // MÉTODOS PRIVADOS
   // =====================
+
+  /**
+   * Inicia el intervalo periódico de checkpoint del WAL
+   * @private
+   */
+  _startWALCheckpointInterval() {
+    // Limpiar intervalo anterior si existe
+    this._stopWALCheckpointInterval();
+
+    // Iniciar nuevo intervalo
+    this.walCheckpointInterval = setInterval(() => {
+      this._performWALCheckpoint();
+    }, this.walCheckpointIntervalMs);
+
+    log.debug(`Checkpoint WAL periódico iniciado (cada ${this.walCheckpointIntervalMs / 1000}s)`);
+  }
+
+  /**
+   * Detiene el intervalo periódico de checkpoint del WAL
+   * @private
+   */
+  _stopWALCheckpointInterval() {
+    if (this.walCheckpointInterval) {
+      clearInterval(this.walCheckpointInterval);
+      this.walCheckpointInterval = null;
+      log.debug('Checkpoint WAL periódico detenido');
+    }
+  }
+
+  /**
+   * Realiza checkpoint del WAL si es necesario
+   * Verifica el tamaño del archivo WAL y ejecuta checkpoint si excede el umbral
+   * @private
+   */
+  _performWALCheckpoint() {
+    if (!this.db || !this.isInitialized) {
+      return;
+    }
+
+    try {
+      // Verificar tamaño del WAL
+      const walSize = this._getWALSize();
+
+      if (walSize > this.walCheckpointThreshold) {
+        log.debug(
+          `Realizando checkpoint WAL (tamaño: ${(walSize / 1024 / 1024).toFixed(2)}MB, umbral: ${(this.walCheckpointThreshold / 1024 / 1024).toFixed(2)}MB)`
+        );
+
+        // Checkpoint pasivo (no bloquea, permite otras operaciones)
+        // PASSIVE: Intenta checkpoint pero no espera a que termine si hay otras conexiones
+        try {
+          this.db.pragma('wal_checkpoint(PASSIVE)');
+
+          // Verificar nuevo tamaño después del checkpoint
+          const newWalSize = this._getWALSize();
+          log.debug(`Checkpoint WAL completado (nuevo tamaño: ${(newWalSize / 1024 / 1024).toFixed(2)}MB)`);
+
+          // Si el WAL sigue siendo muy grande (más del doble del umbral), hacer checkpoint más agresivo
+          if (newWalSize > this.walCheckpointThreshold * 2) {
+            log.info(
+              `WAL aún grande (${(newWalSize / 1024 / 1024).toFixed(2)}MB), haciendo checkpoint TRUNCATE`
+            );
+            // TRUNCATE: Checkpoint más agresivo que también trunca el WAL
+            this.db.pragma('wal_checkpoint(TRUNCATE)');
+            const finalWalSize = this._getWALSize();
+            log.debug(`Checkpoint TRUNCATE completado (tamaño final: ${(finalWalSize / 1024 / 1024).toFixed(2)}MB)`);
+          }
+        } catch (checkpointError) {
+          // Si el checkpoint falla (por ejemplo, base de datos ocupada), solo loggear
+          // No es crítico, se intentará de nuevo en el próximo intervalo
+          log.debug('Checkpoint WAL pospuesto (base de datos ocupada o error):', checkpointError.message);
+        }
+      } else {
+        // WAL dentro del umbral, no hacer checkpoint
+        log.debug(`WAL dentro del umbral (${(walSize / 1024 / 1024).toFixed(2)}MB)`);
+      }
+    } catch (error) {
+      log.error('Error en checkpoint WAL:', error);
+    }
+  }
+
+  /**
+   * Obtiene el tamaño actual del archivo WAL
+   * @private
+   * @returns {number} Tamaño en bytes, 0 si no existe
+   */
+  _getWALSize() {
+    try {
+      const dbPath = config.paths.queueDbPath;
+      const walPath = dbPath + '-wal';
+
+      if (fs.existsSync(walPath)) {
+        const stats = fs.statSync(walPath);
+        return stats.size;
+      }
+
+      return 0;
+    } catch (error) {
+      log.debug('Error obteniendo tamaño WAL:', error.message);
+      return 0;
+    }
+  }
 
   /**
    * Convierte una fila de BD a objeto de descarga

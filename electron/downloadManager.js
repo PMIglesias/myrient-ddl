@@ -109,7 +109,7 @@ const fs = require('fs');
 const path = require('path');
 const { net } = require('electron');
 const config = require('./config');
-const { logger, readJSONFile, writeJSONFile, sanitizeFilename, safeUnlink } = require('./utils');
+const { logger, readJSONFile, writeJSONFile, sanitizeFilename, safeUnlink, validateDiskSpace } = require('./utils');
 const database = require('./database');
 const queueDatabase = require('./queueDatabase');
 const { DownloadState, DownloadPriority } = require('./queueDatabase');
@@ -642,13 +642,25 @@ class DownloadManager {
    * // Las descargas de mayor prioridad se iniciarán primero
    */
   async processQueue() {
+    // CRÍTICO: Doble verificación para prevenir race conditions
     if (this.processing) {
-      log.debug('Ya hay un proceso de cola en ejecución');
+      log.debug('Ya hay un proceso de cola en ejecución, ignorando llamada duplicada');
       return;
     }
 
-    if (!(await this.acquireLock())) {
-      log.error('No se pudo adquirir lock para procesar cola');
+    // Adquirir lock con timeout
+    const lockAcquired = await this.acquireLock(5000);
+    if (!lockAcquired) {
+      log.warn('[DownloadManager] No se pudo adquirir lock, reintentando más tarde');
+      // Reintentar después de un delay
+      setTimeout(() => this.processQueue(), 100);
+      return;
+    }
+
+    // Verificar nuevamente si ya se está procesando (doble verificación)
+    if (this.processing) {
+      this.releaseLock();
+      log.debug('[DownloadManager] Ya se está procesando la cola, ignorando llamada duplicada');
       return;
     }
 
@@ -740,17 +752,28 @@ class DownloadManager {
 
         // Procesar cada descarga seleccionada
         for (const nextDownload of downloadsToStart) {
-          // Remover de la cola
+          // CRÍTICO: Verificar que no esté activa ANTES de remover de cola (doble verificación)
+          if (this.activeDownloads.has(nextDownload.id) || this.chunkedDownloads.has(nextDownload.id)) {
+            log.warn(`[DownloadManager] Descarga ${nextDownload.id} ya está activa, omitiendo`);
+            // Remover de cola de todas formas para evitar loops infinitos
+            const index = this.downloadQueue.findIndex(d => d.id === nextDownload.id);
+            if (index !== -1) {
+              this.downloadQueue.splice(index, 1);
+            }
+            continue;
+          }
+
+          // Remover de la cola ANTES de iniciar (previene duplicados)
           const index = this.downloadQueue.findIndex(d => d.id === nextDownload.id);
           if (index !== -1) {
             this.downloadQueue.splice(index, 1);
-          }
-
-          // Verificar que no esté activa (doble verificación)
-          if (this.hasActiveDownload(nextDownload.id)) {
-            log.warn(`Descarga ${nextDownload.id} ya está activa, saltando`);
+          } else {
+            // Ya fue removida, continuar con la siguiente
+            log.warn(`[DownloadManager] Descarga ${nextDownload.id} ya no está en cola, omitiendo`);
             continue;
           }
+
+          // La verificación ya se hizo arriba, continuar con inicio
 
           // Reservar slot temporalmente
           this.setActiveDownload(nextDownload.id, {
@@ -836,12 +859,26 @@ class DownloadManager {
   /**
    * Maneja errores de descarga con reintentos usando SQLite
    */
+  /**
+   * Maneja errores ocurridos durante una descarga simple
+   * 
+   * Actualiza el estado de la descarga en la base de datos, realiza limpieza
+   * de recursos y decide si se debe reintentar la descarga según la configuración.
+   * 
+   * @private
+   * @param {Object} download - Objeto con información de la descarga
+   * @param {Error} error - Error que ocurrió durante la descarga
+   * @returns {void}
+   */
   _handleDownloadError(download, error) {
     log.error(`Error en descarga (${download.title}):`, error.message);
 
     this.deleteActiveDownload(download.id);
 
     // Usar SQLite para manejar reintentos
+    // CRÍTICO: Flush progreso pendiente antes de marcar como fallida
+    queueDatabase.flushProgress();
+    
     queueDatabase.failDownload(download.id, error.message);
 
     // Verificar si se va a reintentar
@@ -1019,6 +1056,33 @@ class DownloadManager {
         this._sendProgress({ id, state: 'cancelled', error: 'No se seleccionó ubicación' });
         setTimeout(() => this.processQueue(), config.downloads.queueProcessDelay);
         return;
+      }
+
+      // CRÍTICO: Validar espacio disponible en disco antes de iniciar descarga
+      if (expectedFileSize > 0) {
+        const spaceCheck = validateDiskSpace(savePath, expectedFileSize);
+        if (!spaceCheck.valid) {
+          log.error(`Espacio insuficiente para descarga ${id}:`, spaceCheck.error);
+          this.deleteActiveDownload(id);
+          // CRÍTICO: Flush progreso pendiente antes de marcar como fallida
+          queueDatabase.flushProgress();
+          queueDatabase.failDownload(id, spaceCheck.error);
+          this._sendProgress({
+            id,
+            state: 'interrupted',
+            error: spaceCheck.error,
+            savePath,
+          });
+          setTimeout(() => this.processQueue(), config.downloads.queueProcessDelay);
+          return;
+        }
+        if (spaceCheck.warning) {
+          log.warn(`No se pudo verificar espacio en disco para descarga ${id}, continuando con precaución`);
+        } else {
+          log.debug(
+            `Espacio disponible verificado para descarga ${id}: ${(spaceCheck.available / 1024 / 1024).toFixed(2)} MB`
+          );
+        }
       }
 
       // Verificar archivo existente usando FileService
@@ -1280,6 +1344,23 @@ class DownloadManager {
   /**
    * Callback de progreso para descargas fragmentadas
    */
+  /**
+   * Callback que se ejecuta cuando una descarga fragmentada reporta progreso
+   * 
+   * Actualiza la información de progreso de la descarga fragmentada y la envía
+   * al frontend a través del sistema de throttling.
+   * 
+   * @private
+   * @param {Object} info - Información de progreso de la descarga fragmentada
+   * @param {number} info.downloadId - ID de la descarga
+   * @param {number} info.percent - Porcentaje completado (0-1)
+   * @param {number} info.downloadedBytes - Bytes descargados
+   * @param {number} info.totalBytes - Tamaño total en bytes
+   * @param {number} info.speed - Velocidad en MB/s
+   * @param {number} [info.remainingTime] - Tiempo restante estimado en segundos
+   * @param {Array<Object>} [info.chunkProgress] - Progreso individual de cada chunk
+   * @returns {void}
+   */
   _onChunkedProgress(info) {
     // Actualizar última actividad
     const chunked = this.chunkedDownloads.get(info.downloadId);
@@ -1318,14 +1399,22 @@ class DownloadManager {
       info.chunkProgress &&
       info.chunkProgress.some(chunk => chunk.state === 'completed' && chunk.progress >= 0.99);
 
+    // CRÍTICO: Siempre enviar actualizaciones de progreso al frontend durante descargas activas
+    // El ProgressThrottler manejará el throttling apropiado para evitar saturar el IPC
     if (this.progressThrottler) {
       if (hasJustCompletedChunk || info.forceImmediate) {
-        // Enviar inmediatamente si hay un chunk recién completado
+        // Enviar inmediatamente si hay un chunk recién completado o si se solicita explícitamente
         this.progressThrottler.sendImmediate(progressInfo);
       } else {
         // Usar throttle normal para actualizaciones de progreso durante la descarga
+        // Esto programa el envío con un delay mínimo para evitar saturar el IPC
         this.progressThrottler.queueUpdate(progressInfo);
       }
+    } else {
+      // Fallback: si progressThrottler no está disponible, enviar directamente
+      // Esto no debería pasar, pero es mejor tener un fallback que no enviar nada
+      log.warn(`ProgressThrottler no disponible para descarga ${info.downloadId}, enviando directamente`);
+      this._sendProgress(progressInfo);
     }
   }
 
@@ -1333,9 +1422,18 @@ class DownloadManager {
    * Callback de completado para descargas fragmentadas
    */
   _onChunkedComplete(info) {
-    log.info(`Descarga fragmentada completada: ${info.savePath}`);
+    log.info('Descarga fragmentada completada', {
+      downloadId: info.downloadId,
+      savePath: info.savePath,
+      totalBytes: info.totalBytes,
+      duration: info.duration,
+      timestamp: Date.now(),
+    });
 
     // Marcar como completada en SQLite
+    // CRÍTICO: Flush progreso pendiente antes de completar
+    queueDatabase.flushProgress();
+    
     queueDatabase.completeDownload(info.downloadId, {
       savePath: info.savePath,
       duration: info.duration,
@@ -1365,11 +1463,25 @@ class DownloadManager {
   /**
    * Callback de error para descargas fragmentadas
    */
+  /**
+   * Callback que se ejecuta cuando una descarga fragmentada falla
+   * 
+   * Actualiza el estado de la descarga en la base de datos, realiza limpieza
+   * de recursos y decide si se debe reintentar según la configuración de reintentos.
+   * 
+   * @private
+   * @param {ChunkedDownloader} downloader - Instancia del descargador fragmentado que falló
+   * @param {Error} error - Error que causó la falla de la descarga
+   * @returns {void}
+   */
   _onChunkedError(downloader, error) {
     log.error(`Error en descarga fragmentada ${downloader.downloadId}:`, error.message);
 
     // Marcar como fallida en SQLite
-    queueDatabase.failDownload(downloader.downloadId, error.message);
+      // CRÍTICO: Flush progreso pendiente antes de marcar como fallida
+      queueDatabase.flushProgress();
+      
+      queueDatabase.failDownload(downloader.downloadId, error.message);
 
     // Verificar si se va a reintentar
     const dbDownload = queueDatabase.getById(downloader.downloadId);
@@ -1496,6 +1608,8 @@ class DownloadManager {
         );
       } catch (error) {
         log.error(`[CircuitBreaker] Error al crear request para ${downloadUrl}:`, error.message);
+        // CRÍTICO: Flush progreso pendiente antes de marcar como fallida
+        queueDatabase.flushProgress();
         queueDatabase.failDownload(id, error.message);
         this._cleanupDownload(id, savePath, false);
         this._sendProgress({
@@ -1512,6 +1626,40 @@ class DownloadManager {
       request = net.request(downloadUrl);
     }
 
+    // CRÍTICO: Configurar timeout para prevenir requests colgadas indefinidamente
+    const timeout = config.network?.timeout || config.network?.responseTimeout || 30000; // 30 segundos default
+    let timeoutId = null;
+
+    const clearRequestTimeout = () => {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+        timeoutId = null;
+      }
+    };
+
+    // Configurar timeout para recibir respuesta
+    timeoutId = setTimeout(() => {
+      if (request && !request.destroyed) {
+        log.warn(`Descarga ${id}: timeout después de ${timeout}ms (no se recibió respuesta)`);
+        try {
+          request.abort();
+        } catch (e) {
+          log.debug(`Error abortando request con timeout: ${e.message}`);
+        }
+        // CRÍTICO: Flush progreso pendiente antes de marcar como fallida
+        queueDatabase.flushProgress();
+        queueDatabase.failDownload(id, `Timeout: no se recibió respuesta del servidor en ${timeout}ms`);
+        this._cleanupDownload(id, savePath, false);
+        this._sendProgress({
+          id,
+          state: 'interrupted',
+          error: `Timeout: no se recibió respuesta del servidor en ${timeout}ms`,
+          savePath,
+        });
+        this.processQueue();
+      }
+    }, timeout);
+
     this.setActiveDownload(id, {
       request,
       response: null,
@@ -1523,6 +1671,7 @@ class DownloadManager {
       resumeFromByte,
       isResuming,
       percent: 0,
+      timeoutId, // Guardar timeoutId para limpiarlo si se cancela
     });
 
     // Headers
@@ -1536,6 +1685,17 @@ class DownloadManager {
     }
 
     // Notificar inicio
+    log.info('Iniciando descarga simple', {
+      downloadId: id,
+      title,
+      url: downloadUrl,
+      savePath,
+      expectedFileSize,
+      resuming: isResuming,
+      resumeFromByte,
+      timestamp: Date.now(),
+    });
+
     this._sendProgress({
       id,
       state: 'starting',
@@ -1547,6 +1707,7 @@ class DownloadManager {
 
     // Manejar respuesta
     request.on('response', response => {
+      clearRequestTimeout();
       this._handleResponse({
         id,
         response,
@@ -1560,7 +1721,10 @@ class DownloadManager {
     });
 
     request.on('error', error => {
+      clearRequestTimeout();
       log.error('Error en request:', error);
+      // CRÍTICO: Flush progreso pendiente antes de marcar como fallida
+      queueDatabase.flushProgress();
       // Registrar error en SQLite
       queueDatabase.failDownload(id, error.message);
       this._cleanupDownload(id, savePath, false);
@@ -1596,6 +1760,8 @@ class DownloadManager {
       log.info('Redirección detectada, no soportada');
       request.abort();
       this._cleanupDownload(id, savePath, false);
+      // CRÍTICO: Flush progreso pendiente antes de marcar como fallida
+      queueDatabase.flushProgress();
       queueDatabase.failDownload(id, 'Redirección no soportada');
       this._sendProgress({ id, state: 'interrupted', error: 'Redirección no soportada' });
       this.processQueue();
@@ -1605,6 +1771,8 @@ class DownloadManager {
     // Verificar código de estado
     if (response.statusCode !== 200 && response.statusCode !== 206) {
       log.error('Error HTTP:', response.statusCode);
+      // CRÍTICO: Flush progreso pendiente antes de marcar como fallida
+      queueDatabase.flushProgress();
       queueDatabase.failDownload(id, `Error HTTP ${response.statusCode}`);
       this._sendProgress({
         id,
@@ -1737,6 +1905,8 @@ class DownloadManager {
         this.progressThrottler.cancelPending(id);
       }
 
+      // CRÍTICO: Flush progreso pendiente antes de marcar como fallida
+      queueDatabase.flushProgress();
       queueDatabase.failDownload(id, `Error de escritura: ${error.message}`);
       this._cleanupDownload(id, savePath, false);
       this._sendProgress({
@@ -1874,17 +2044,136 @@ class DownloadManager {
       isCompleting = true;
       log.debug(`Descarga ${id}: response.end recibido, finalizando escritura...`);
 
-      fileStream.end(() => {
+      // CRÍTICO: Timeout de seguridad para detectar descargas congeladas
+      // Si el callback de fileStream.end() no se ejecuta en 10 segundos,
+      // forzar la finalización verificando el tamaño del archivo
+      const completionTimeout = setTimeout(() => {
         if (isCleanedUp) return;
-
+        
+        log.warn(`Descarga ${id}: Timeout en finalización, verificando archivo...`);
+        
         try {
-          if (fs.existsSync(savePath)) {
-            fs.unlinkSync(savePath);
+          // Verificar si el archivo parcial existe y tiene el tamaño correcto
+          if (fs.existsSync(partialFilePath)) {
+            const stats = fs.statSync(partialFilePath);
+            const fileSize = stats.size;
+            
+            // Si el archivo tiene el tamaño esperado o está muy cerca (99.9%),
+            // considerarlo completado
+            const expectedSize = totalBytes > 0 ? totalBytes : (expectedFileSize > 0 ? expectedFileSize : null);
+            
+            if (!expectedSize) {
+              // Si no hay tamaño esperado, verificar si el progreso reportado está cerca del 100%
+              const downloadInfo = this.getActiveDownload(id);
+              const reportedPercent = downloadInfo?.percent || 0;
+              
+              if (reportedPercent >= 0.99 && fileSize > 0) {
+                log.info(`Descarga ${id}: Archivo completado por timeout (sin tamaño esperado, progreso: ${(reportedPercent * 100).toFixed(1)}%, tamaño: ${fileSize} bytes)`);
+                
+                // Forzar cierre del stream si aún está abierto
+                if (fileStream && !fileStream.destroyed) {
+                  try {
+                    fileStream.destroy();
+                  } catch (e) {
+                    log.debug(`Error cerrando stream: ${e.message}`);
+                  }
+                }
+                
+                // Finalizar descarga
+                _finalizeDownload();
+              } else {
+                log.warn(`Descarga ${id}: Archivo incompleto (progreso: ${(reportedPercent * 100).toFixed(1)}%, tamaño: ${fileSize} bytes), manteniendo para reanudación`);
+                isCompleting = false;
+              }
+            } else {
+              const sizeDifference = Math.abs(fileSize - expectedSize);
+              const sizeThreshold = expectedSize * 0.001; // 0.1% de tolerancia
+              
+              if (fileSize >= expectedSize || sizeDifference <= sizeThreshold) {
+                log.info(`Descarga ${id}: Archivo completado por timeout (${fileSize}/${expectedSize} bytes)`);
+                
+                // Forzar cierre del stream si aún está abierto
+                if (fileStream && !fileStream.destroyed) {
+                  try {
+                    fileStream.destroy();
+                  } catch (e) {
+                    log.debug(`Error cerrando stream: ${e.message}`);
+                  }
+                }
+                
+                // Finalizar descarga
+                _finalizeDownload();
+              } else {
+                log.warn(`Descarga ${id}: Archivo incompleto (${fileSize}/${expectedSize} bytes), manteniendo para reanudación`);
+                // No finalizar, dejar que se pueda reanudar
+                isCompleting = false;
+              }
+            }
+          } else {
+            log.warn(`Descarga ${id}: Archivo parcial no existe después de timeout`);
+            isCompleting = false;
           }
-          fs.renameSync(partialFilePath, savePath);
-          log.info('Descarga completada:', savePath);
+        } catch (err) {
+          log.error(`Descarga ${id}: Error verificando archivo después de timeout:`, err.message);
+          isCompleting = false;
+        }
+      }, 10000); // 10 segundos de timeout
+
+      // Función auxiliar para finalizar la descarga
+      const _finalizeDownload = () => {
+        if (isCleanedUp) return;
+        
+        clearTimeout(completionTimeout);
+        
+        try {
+          // Verificar tamaño del archivo antes de renombrar
+          if (fs.existsSync(partialFilePath)) {
+            const stats = fs.statSync(partialFilePath);
+            const fileSize = stats.size;
+            const expectedSize = totalBytes > 0 ? totalBytes : (expectedFileSize > 0 ? expectedFileSize : null);
+            
+            // Verificar que el archivo tenga el tamaño esperado (con pequeña tolerancia)
+            if (expectedSize && fileSize < expectedSize * 0.99) {
+              log.warn(`Descarga ${id}: Archivo incompleto (${fileSize}/${expectedSize} bytes), no finalizando`);
+              isCompleting = false;
+              return;
+            }
+            
+            // Si no hay tamaño esperado pero el progreso reportado está cerca del 100%, continuar
+            if (!expectedSize) {
+              const downloadInfo = this.getActiveDownload(id);
+              const reportedPercent = downloadInfo?.percent || 0;
+              
+              if (reportedPercent < 0.99) {
+                log.warn(`Descarga ${id}: Progreso insuficiente (${(reportedPercent * 100).toFixed(1)}%), no finalizando`);
+                isCompleting = false;
+                return;
+              }
+            }
+            
+            if (fs.existsSync(savePath)) {
+              fs.unlinkSync(savePath);
+            }
+            fs.renameSync(partialFilePath, savePath);
+            const download = this.getActiveDownload(id);
+            log.info('Descarga simple completada', {
+              downloadId: id,
+              title,
+              savePath,
+              fileSize,
+              totalBytes: expectedFileSize,
+              duration: download ? Date.now() - download.startTime : 0,
+              timestamp: Date.now(),
+            });
+          } else {
+            log.error(`Descarga ${id}: Archivo parcial no existe al finalizar`);
+            isCompleting = false;
+            return;
+          }
         } catch (renameErr) {
-          log.error('Error renombrando archivo:', renameErr.message);
+          log.error(`Descarga ${id}: Error renombrando archivo:`, renameErr.message);
+          isCompleting = false;
+          return;
         }
 
         cleanup('completed');
@@ -1895,6 +2184,9 @@ class DownloadManager {
         }
 
         // Marcar como completada en SQLite
+        // CRÍTICO: Flush progreso pendiente antes de completar
+        queueDatabase.flushProgress();
+        
         queueDatabase.completeDownload(id, { savePath });
 
         this._sendProgress({
@@ -1906,7 +2198,22 @@ class DownloadManager {
         });
 
         this.processQueue();
+      };
+
+      // Intentar cerrar el stream normalmente
+      fileStream.end(() => {
+        clearTimeout(completionTimeout);
+        _finalizeDownload();
       });
+      
+      // CRÍTICO: Si el stream ya está cerrado o destruido, finalizar inmediatamente
+      if (fileStream.destroyed || fileStream.writableEnded) {
+        clearTimeout(completionTimeout);
+        // Dar un pequeño delay para asegurar que todos los datos se hayan escrito
+        setTimeout(() => {
+          _finalizeDownload();
+        }, 100);
+      }
     };
 
     const responseErrorHandler = error => {
@@ -1922,6 +2229,8 @@ class DownloadManager {
         this.progressThrottler.cancelPending(id);
       }
 
+      // CRÍTICO: Flush progreso pendiente antes de marcar como fallida
+      queueDatabase.flushProgress();
       queueDatabase.failDownload(id, error.message);
       this._cleanupDownload(id, savePath);
       this._sendProgress({ id, state: 'interrupted', error: error.message, savePath });
@@ -1942,6 +2251,8 @@ class DownloadManager {
           this.progressThrottler.cancelPending(id);
         }
 
+        // CRÍTICO: Flush progreso pendiente antes de marcar como fallida
+        queueDatabase.flushProgress();
         queueDatabase.failDownload(id, 'Conexión cerrada prematuramente');
         this._cleanupDownload(id, savePath);
         this._sendProgress({
@@ -1998,6 +2309,11 @@ class DownloadManager {
    * } else {
    *   console.error(`Error al pausar: ${result.error}`);
    * }
+   */
+  /**
+   * Pausa una descarga activa
+   *
+   * CRÍTICO: Flush de progreso antes de pausar para asegurar que el estado se guarde
    */
   async pauseDownload(downloadId) {
     log.info(`=== PAUSANDO DESCARGA ${downloadId} ===`);
@@ -2213,7 +2529,27 @@ class DownloadManager {
 
     // Verificar descargas fragmentadas
     this.chunkedDownloads.forEach((chunked, id) => {
-      if (now - (chunked.lastUpdate || chunked.startTime || 0) > maxAgeMs) {
+      const lastUpdate = chunked.lastUpdate || chunked.startTime || 0;
+      const timeSinceUpdate = now - lastUpdate;
+      
+      // CRÍTICO: Detectar descargas fragmentadas que tienen todos los chunks completados
+      // pero el merge no se inició (descargas congeladas)
+      if (chunked.completedChunks >= chunked.chunks.length && 
+          chunked.activeChunks.size === 0 && 
+          !chunked.mergeInProgress &&
+          timeSinceUpdate > 10000) { // 10 segundos sin actividad
+        log.warn(`Descarga fragmentada ${id} tiene todos los chunks completados pero merge no iniciado, forzando merge...`);
+        try {
+          // Intentar iniciar el merge manualmente
+          chunked._mergeChunks();
+          return; // No marcar como zombie si logramos iniciar el merge
+        } catch (error) {
+          log.error(`Error forzando merge en descarga ${id}:`, error.message);
+        }
+      }
+      
+      // Verificar timeout normal
+      if (timeSinceUpdate > maxAgeMs) {
         staleIds.push({ id, type: 'chunked' });
       }
     });
@@ -2223,7 +2559,29 @@ class DownloadManager {
 
       if (type === 'chunked') {
         const chunked = this.chunkedDownloads.get(id);
-        if (chunked) chunked.destroy();
+        if (chunked) {
+          // Antes de destruir, intentar verificar si realmente está congelada
+          if (chunked.completedChunks >= chunked.chunks.length && 
+              chunked.activeChunks.size === 0 && 
+              !chunked.mergeInProgress) {
+            log.warn(`Descarga ${id} tiene todos los chunks completados, intentando merge antes de limpiar...`);
+            try {
+              chunked._mergeChunks();
+              // Esperar un momento para ver si el merge se inicia
+              setTimeout(() => {
+                if (!chunked.mergeInProgress) {
+                  log.error(`Merge no se inició para descarga ${id}, limpiando como zombie`);
+                  chunked.destroy();
+                  this.chunkedDownloads.delete(id);
+                }
+              }, 2000);
+              return; // No eliminar inmediatamente si intentamos iniciar merge
+            } catch (error) {
+              log.error(`Error iniciando merge antes de limpiar descarga ${id}:`, error.message);
+            }
+          }
+          chunked.destroy();
+        }
         this.chunkedDownloads.delete(id);
       } else {
         this.activeDownloads.delete(id);
@@ -2749,6 +3107,12 @@ class DownloadManager {
 
     log.debug(`Limpiando descarga ${id} (keepPartialFile: ${keepPartialFile})`);
 
+    // CRÍTICO: Limpiar timeout si existe
+    if (download.timeoutId) {
+      clearTimeout(download.timeoutId);
+      download.timeoutId = null;
+    }
+
     this.activeDownloads.delete(id);
     this._removeListeners(download.request, download.response, download.fileStream);
 
@@ -2864,6 +3228,21 @@ class DownloadManager {
   /**
    * Envía progreso a la ventana principal
    */
+  /**
+   * Envía información de progreso de descarga al frontend mediante IPC
+   * 
+   * Utiliza el helper centralizado sendIpcProgress para enviar actualizaciones
+   * de progreso de manera optimizada al proceso renderer.
+   * 
+   * @private
+   * @param {Object} progressInfo - Información de progreso de la descarga
+   * @param {number} progressInfo.id - ID de la descarga
+   * @param {string} progressInfo.state - Estado actual de la descarga
+   * @param {number} [progressInfo.percent] - Porcentaje completado (0-1)
+   * @param {string} [progressInfo.title] - Título del archivo
+   * @param {string} [progressInfo.error] - Mensaje de error si hay
+   * @returns {void}
+   */
   _sendProgress(progressInfo) {
     if (this.mainWindow && !this.mainWindow.isDestroyed()) {
       if (['completed', 'interrupted', 'cancelled'].includes(progressInfo.state)) {
@@ -2930,6 +3309,20 @@ class DownloadManager {
    * this._formatBytes(1048576); // "1 MB"
    * this._formatBytes(1073741824); // "1 GB"
    * this._formatBytes(0); // "0 B"
+   */
+  /**
+   * Formatea un número de bytes en una representación legible con unidades
+   * 
+   * Convierte bytes a la unidad más apropiada (B, KB, MB, GB, TB) y
+   * formatea el resultado con 2 decimales.
+   * 
+   * @private
+   * @param {number} bytes - Cantidad de bytes a formatear
+   * @returns {string} Representación formateada (ej: "1.5 MB", "500 KB")
+   * 
+   * @example
+   * this._formatBytes(1536); // "1.5 KB"
+   * this._formatBytes(1048576); // "1 MB"
    */
   _formatBytes(bytes) {
     if (bytes === 0) return '0 B';

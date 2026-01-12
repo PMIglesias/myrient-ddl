@@ -28,13 +28,17 @@
  * @property {import('vue').Ref<number>} currentDownloadIndex - Índice actual de descarga
  */
 
-import { ref } from 'vue';
+import { ref, shallowRef, triggerRef } from 'vue';
 
 // =====================
 // ESTADO GLOBAL (SINGLETON)
 // =====================
 
-export const downloads = ref({});
+// CRÍTICO: Usar shallowRef para evitar deep reactivity en objetos grandes
+// Esto previene re-renders innecesarios cuando solo cambian valores numéricos.
+// IMPORTANTE: Al ser shallowRef, cualquier cambio interno requiere llamar a triggerRef(downloads).
+export const downloads = shallowRef({});
+export { triggerRef };
 export const downloadQueue = ref([]);
 export const speedStats = ref(new Map());
 export const pendingConfirmations = ref([]);

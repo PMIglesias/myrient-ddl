@@ -75,6 +75,14 @@ export function useVirtualScroll(options = {}) {
       return { start: 0, end: items.value.length, total: items.value.length };
     }
 
+    // Si el contenedor aún no tiene altura medida, mostrar un número mínimo razonable de elementos
+    // o todos si son pocos, para evitar mostrar solo el overscan
+    if (containerHeight.value <= 0 || containerHeight.value < itemHeight) {
+      const minVisibleItems = Math.max(20, OVERSCAN * 4); // Mínimo 20 elementos o 4x overscan
+      const end = Math.min(items.value.length, minVisibleItems);
+      return { start: 0, end, total: items.value.length };
+    }
+
     const start = Math.max(0, Math.floor(scrollTop.value / measuredRowHeight.value) - OVERSCAN);
 
     const end = Math.min(

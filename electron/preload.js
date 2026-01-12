@@ -48,6 +48,7 @@ const validInvokeChannels = [
   'window-close',
   // Diálogos del sistema
   'select-folder',
+  'open-folder',
   // Logging del frontend
   'frontend-log',
   'save-logs-to-file',
@@ -210,6 +211,10 @@ const api = {
   // Abre el diálogo nativo del sistema operativo para seleccionar una carpeta
   // Retorna la ruta de la carpeta seleccionada por el usuario o null si canceló
   selectFolder: () => safeInvoke('select-folder'),
+
+  // Abre el explorador de archivos y muestra el archivo o carpeta especificada
+  // filePath: Ruta completa al archivo o carpeta que se desea mostrar
+  openFolder: filePath => safeInvoke('open-folder', filePath),
 
   // =====================
   // LOGGING FRONTEND

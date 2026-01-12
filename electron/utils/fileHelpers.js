@@ -21,6 +21,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { execSync } = require('child_process');
 const config = require('../config');
 const { logger } = require('./logger');
 
@@ -174,6 +175,168 @@ function hasWritePermission(dirPath) {
 }
 
 /**
+ * Obtiene el espacio disponible en disco para un directorio o archivo
+ *
+ * Verifica el espacio disponible en el disco donde se encuentra el directorio o archivo.
+ * Soporta Windows, Linux y macOS usando comandos nativos del sistema operativo.
+ *
+ * @param {string} directoryPath - Ruta del directorio o archivo para verificar espacio
+ * @returns {number|null} Espacio disponible en bytes, o null si no se pudo determinar
+ *
+ * @example
+ * // Verificar espacio disponible en un directorio
+ * const space = getAvailableDiskSpace('C:/Downloads');
+ * if (space !== null) {
+ *   console.log(`Espacio disponible: ${(space / 1024 / 1024).toFixed(2)} MB`);
+ * }
+ */
+function getAvailableDiskSpace(directoryPath) {
+  try {
+    // Normalizar la ruta
+    const normalizedPath = path.resolve(directoryPath);
+    
+    // Si es un archivo, obtener el directorio padre
+    let dirToCheck = normalizedPath;
+    try {
+      const stats = fs.statSync(normalizedPath);
+      if (!stats.isDirectory()) {
+        dirToCheck = path.dirname(normalizedPath);
+      }
+    } catch (e) {
+      // Si no existe, usar el directorio padre
+      dirToCheck = path.dirname(normalizedPath);
+    }
+
+    // Windows: usar wmic para obtener espacio libre
+    if (process.platform === 'win32') {
+      try {
+        // Extraer la letra de la unidad (ej: "C:" de "C:\Users\...")
+        const driveMatch = dirToCheck.match(/^([A-Za-z]:)/);
+        if (!driveMatch) {
+          log.warn('No se pudo extraer unidad de disco de:', dirToCheck);
+          return null;
+        }
+        
+        const drive = driveMatch[1];
+        const result = execSync(
+          `wmic logicaldisk where "DeviceID='${drive}'" get FreeSpace /value`,
+          { encoding: 'utf8', timeout: 5000 }
+        )
+          .toString()
+          .trim();
+        
+        const freeSpaceMatch = result.match(/FreeSpace=(\d+)/);
+        if (freeSpaceMatch) {
+          const freeSpace = parseInt(freeSpaceMatch[1], 10);
+          return freeSpace || 0;
+        }
+        
+        log.warn('No se pudo parsear espacio libre de wmic');
+        return null;
+      } catch (error) {
+        log.warn('Error obteniendo espacio en disco (Windows):', error.message);
+        return null;
+      }
+    }
+
+    // Linux/Mac: usar df
+    try {
+      const result = execSync(
+        `df -k "${dirToCheck}" | tail -1 | awk '{print $4}'`,
+        { encoding: 'utf8', timeout: 5000 }
+      )
+        .toString()
+        .trim();
+      
+      const freeSpaceKB = parseInt(result, 10);
+      if (isNaN(freeSpaceKB)) {
+        log.warn('No se pudo parsear espacio libre de df');
+        return null;
+      }
+      
+      return freeSpaceKB * 1024; // Convertir KB a bytes
+    } catch (error) {
+      log.warn('Error obteniendo espacio en disco (Linux/Mac):', error.message);
+      return null;
+    }
+  } catch (error) {
+    log.warn('Error obteniendo espacio en disco:', error.message);
+    return null;
+  }
+}
+
+/**
+ * Formatea bytes a una representación legible (KB, MB, GB, TB)
+ *
+ * @param {number} bytes - Número de bytes a formatear
+ * @returns {string} String formateado (ej: "1.5 GB")
+ */
+function formatBytes(bytes) {
+  if (bytes === 0) return '0 Bytes';
+  if (bytes < 0) return '0 Bytes';
+  
+  const k = 1024;
+  const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  
+  return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i];
+}
+
+/**
+ * Valida que hay espacio suficiente en disco para un archivo
+ *
+ * Verifica que el espacio disponible en el disco sea suficiente para almacenar
+ * el archivo esperado, con un margen de seguridad del 10% adicional.
+ *
+ * @param {string} filePath - Ruta completa del archivo donde se guardará
+ * @param {number} expectedSize - Tamaño esperado del archivo en bytes
+ * @returns {Object} Resultado de la validación
+ * @returns {boolean} returns.valid - Si hay espacio suficiente
+ * @returns {string} [returns.error] - Mensaje de error si no hay espacio
+ * @returns {boolean} [returns.warning] - Si hay una advertencia (no se pudo verificar)
+ * @returns {number} [returns.available] - Espacio disponible en bytes
+ * @returns {number} [returns.required] - Espacio requerido en bytes
+ *
+ * @example
+ * // Validar espacio antes de descargar
+ * const validation = validateDiskSpace('C:/Downloads/archivo.zip', 1000000000);
+ * if (!validation.valid) {
+ *   console.error(validation.error);
+ *   // "Espacio insuficiente: se requieren 1.1 GB, disponibles 500 MB"
+ * }
+ */
+function validateDiskSpace(filePath, expectedSize) {
+  if (!expectedSize || expectedSize <= 0) {
+    // Si no hay tamaño esperado, no se puede validar
+    log.debug('No se puede validar espacio: tamaño esperado no disponible');
+    return { valid: true, warning: true };
+  }
+
+  const availableSpace = getAvailableDiskSpace(filePath);
+
+  if (availableSpace === null) {
+    // No se pudo determinar espacio, permitir pero advertir
+    log.warn('No se pudo verificar espacio en disco, continuando con precaución');
+    return { valid: true, warning: true };
+  }
+
+  // Requerir al menos 110% del tamaño esperado (margen de seguridad del 10%)
+  // Esto cubre overhead del sistema de archivos, archivos temporales, etc.
+  const requiredSpace = expectedSize * 1.1;
+
+  if (availableSpace < requiredSpace) {
+    return {
+      valid: false,
+      error: `Espacio insuficiente en disco: se requieren ${formatBytes(requiredSpace)}, disponibles ${formatBytes(availableSpace)}`,
+      available: availableSpace,
+      required: requiredSpace,
+    };
+  }
+
+  return { valid: true };
+}
+
+/**
  * Elimina un archivo de forma asíncrona con manejo de errores y reintentos automáticos
  *
  * Maneja casos donde el archivo está en uso temporalmente (EBUSY, EPERM) reintentando
@@ -230,5 +393,8 @@ module.exports = {
   writeJSONFile,
   ensureDirectoryExists,
   hasWritePermission,
+  getAvailableDiskSpace,
+  formatBytes,
+  validateDiskSpace,
   safeUnlink,
 };

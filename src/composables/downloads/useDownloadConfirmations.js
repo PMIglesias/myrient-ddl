@@ -15,6 +15,7 @@ import {
   selectedDownloads,
   downloadQueue,
   downloads,
+  triggerRef,
 } from './useDownloadState';
 import * as api from '../../services/api';
 
@@ -111,6 +112,9 @@ export function useDownloadConfirmations(processDownloadQueueFn, saveDownloadHis
         delete dl.speed;
         delete dl.eta;
 
+        // CRÍTICO: Trigger reactivity for shallowRef
+        triggerRef(downloads);
+
         console.log(
           `[confirmOverwrite] Descarga ${downloadId} confirmada para sobrescritura${usedFallback ? ' (usando fallback)' : ''}`
         );
@@ -130,6 +134,10 @@ export function useDownloadConfirmations(processDownloadQueueFn, saveDownloadHis
     if (downloads.value[downloadId]) {
       downloads.value[downloadId].state = 'cancelled';
       downloads.value[downloadId].error = 'Cancelado por el usuario';
+      
+      // CRÍTICO: Trigger reactivity for shallowRef
+      triggerRef(downloads);
+      
       if (saveDownloadHistoryFn) saveDownloadHistoryFn();
     }
   };

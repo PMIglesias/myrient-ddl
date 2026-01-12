@@ -29,6 +29,7 @@ import {
   startingDownloads,
   queueMutex,
   timeoutManager,
+  triggerRef,
 } from './useDownloadState';
 import * as api from '../../services/api';
 
@@ -249,6 +250,7 @@ export function useDownloadQueue(settings = null) {
               if (downloads.value[item.id]) {
                 downloads.value[item.id].state = 'interrupted';
                 downloads.value[item.id].error = result.error || 'Error al iniciar descarga';
+                triggerRef(downloads);
               }
             }
           }

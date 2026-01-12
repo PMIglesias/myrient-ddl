@@ -108,6 +108,123 @@ function escapeLikeTerm(term) {
 }
 
 /**
+ * Sanitiza término de búsqueda para prevenir inyección
+ *
+ * Remueve caracteres peligrosos y limita la longitud del término de búsqueda.
+ * Mantiene funcionalidad de búsqueda útil pero previene ataques.
+ *
+ * @param {string} term - Término de búsqueda a sanitizar
+ * @returns {string} Término sanitizado seguro
+ */
+function sanitizeSearchTerm(term) {
+  if (typeof term !== 'string') {
+    return '';
+  }
+
+  return term
+    .trim()
+    .slice(0, 100) // Limitar longitud
+    .replace(/[<>'"\\]/g, '') // Remover caracteres peligrosos
+    .replace(/\s+/g, ' '); // Normalizar espacios
+}
+
+/**
+ * Valida y sanitiza ruta de descarga
+ *
+ * Previene path traversal y verifica que la ruta esté dentro de directorios permitidos.
+ *
+ * @param {string} downloadPath - Ruta de descarga a validar
+ * @returns {Object} Resultado de validación: { valid: boolean, path?: string, error?: string }
+ */
+function validateAndSanitizeDownloadPath(downloadPath) {
+  const path = require('path');
+  const fs = require('fs');
+  const os = require('os');
+  const { app } = require('electron');
+
+  if (!downloadPath || typeof downloadPath !== 'string') {
+    return { valid: false, error: 'Ruta de descarga no proporcionada' };
+  }
+
+  // Normalizar ruta
+  let normalized;
+  try {
+    normalized = path.normalize(downloadPath.trim());
+  } catch (error) {
+    return { valid: false, error: 'Ruta de descarga inválida' };
+  }
+
+  // Verificar que no contenga path traversal
+  if (normalized.includes('..') || normalized.includes('~')) {
+    return { valid: false, error: 'Ruta de descarga contiene path traversal' };
+  }
+
+  // Verificar que esté dentro de directorios permitidos
+  const allowedBaseDirs = [
+    os.homedir(),
+    path.join(app.getPath('userData'), 'downloads'),
+    path.join(os.homedir(), 'Downloads'),
+    path.join(os.homedir(), 'Desktop'),
+  ];
+
+  try {
+    const resolved = path.resolve(normalized);
+    const isAllowed = allowedBaseDirs.some(baseDir => {
+      try {
+        const resolvedBase = path.resolve(baseDir);
+        return resolved.startsWith(resolvedBase);
+      } catch {
+        return false;
+      }
+    });
+
+    if (!isAllowed) {
+      return { valid: false, error: 'Ruta de descarga fuera de directorios permitidos' };
+    }
+
+    return { valid: true, path: resolved };
+  } catch (error) {
+    return { valid: false, error: `Error validando ruta: ${error.message}` };
+  }
+}
+
+/**
+ * Sanitiza nombre de archivo de forma robusta
+ *
+ * Remueve caracteres peligrosos y valida longitud. Más estricto que sanitizeFilename
+ * para uso en validación de inputs del usuario.
+ *
+ * @param {string} fileName - Nombre de archivo a sanitizar
+ * @returns {string} Nombre de archivo sanitizado
+ */
+function sanitizeFileName(fileName) {
+  if (typeof fileName !== 'string') {
+    return 'unnamed';
+  }
+
+  // Usar función existente pero agregar validación adicional
+  const { sanitizeFilename } = require('./fileHelpers');
+  let sanitized = sanitizeFilename(fileName);
+
+  // Verificar longitud (máximo 255 caracteres para sistemas de archivos)
+  if (sanitized.length > 255) {
+    sanitized = sanitized.slice(0, 255);
+  }
+
+  // Verificar caracteres peligrosos restantes
+  if (/[<>:"|?*\x00-\x1f]/.test(sanitized)) {
+    sanitized = sanitized.replace(/[<>:"|?*\x00-\x1f]/g, '_');
+  }
+
+  // Asegurar que no esté vacío
+  if (sanitized.trim().length === 0) {
+    sanitized = 'unnamed';
+  }
+
+  return sanitized;
+}
+
+/**
  * Valida los parámetros requeridos para iniciar una descarga de archivo
  *
  * Usa schemas de Zod si están disponibles para validación robusta, sino usa validación básica.
@@ -206,16 +323,18 @@ function validateSearchTerm(searchTerm) {
     return { valid: false, error: 'Término de búsqueda inválido' };
   }
 
-  const trimmed = searchTerm.trim();
-  if (trimmed.length < 2) {
+  // CRÍTICO: Sanitizar término antes de validar
+  const sanitized = sanitizeSearchTerm(searchTerm);
+  
+  if (sanitized.length < 2) {
     return { valid: false, error: VALIDATIONS.SEARCH.TERM_MIN_LENGTH };
   }
 
-  if (trimmed.length > 100) {
+  if (sanitized.length > 100) {
     return { valid: false, error: VALIDATIONS.SEARCH.TERM_MAX_LENGTH };
   }
 
-  return { valid: true, data: trimmed };
+  return { valid: true, data: sanitized };
 }
 
 /**
@@ -400,6 +519,9 @@ function getNetworkErrorMessage(error) {
 module.exports = {
   isValidUrl,
   escapeLikeTerm,
+  sanitizeSearchTerm,
+  validateAndSanitizeDownloadPath,
+  sanitizeFileName,
   validateDownloadParams,
   validateSearchTerm,
   validateNodeId,

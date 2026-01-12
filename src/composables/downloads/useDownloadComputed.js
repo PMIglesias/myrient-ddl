@@ -193,58 +193,50 @@ export function useDownloadComputed() {
       cachedStateSignature = currentSignature;
       console.debug(`[allDownloads] Reordenado (${cachedDownloadsList.length} items)`);
     } else {
-      // CASO 2: Solo cambió el progreso, no los estados. Solo actualizamos valores sin reordenar.
-      // Esto es mucho más eficiente porque solo tocamos los campos que cambian frecuentemente.
+      // CASO 2: Solo cambió el progreso, no los estados.
+      // IMPORTANTE: Para asegurar que Vue detecte los cambios en las propiedades internas
+      // de cada descarga, necesitamos crear NUEVAS referencias de objeto para aquellas
+      // descargas que están en progreso. Si solo mutamos las existentes, los componentes
+      // hijos podrían no re-renderizar debido a la optimización de identidad de objetos.
 
-      cachedDownloadsList.forEach(cached => {
+      cachedDownloadsList = cachedDownloadsList.map(cached => {
         const current = downloads.value[cached.id];
-        if (current) {
-          // Actualizamos los campos que cambian constantemente durante una descarga
-          cached.percent = current.percent;
-          cached.downloadedBytes = current.downloadedBytes;
-          cached.speed = current.speed;
-          cached.eta = current.eta;
-          cached.error = current.error;
-          cached.remainingTime = current.remainingTime;
+        
+        // Si no hay datos actuales para este item (no debería pasar), devolver el cacheado
+        if (!current) return cached;
 
-          // Información sobre descargas por chunks (cuando un archivo se descarga en partes)
-          // Solo actualizamos si el valor existe para evitar sobrescribir con undefined
-          if (current.chunked !== undefined) {
-            cached.chunked = current.chunked;
-          }
-
-          // El progreso de chunks es un array que muestra el estado de cada parte
-          if (current.chunkProgress !== undefined && Array.isArray(current.chunkProgress)) {
-            cached.chunkProgress = current.chunkProgress;
-          } else if (cached.chunkProgress === undefined && current.chunked) {
-            // Si es una descarga por chunks pero aún no hay progreso, inicializamos como array vacío
-            cached.chunkProgress = [];
-          }
-
-          // Contadores de chunks: cuántos están activos, completados y totales
-          if (current.activeChunks !== undefined) {
-            cached.activeChunks = current.activeChunks;
-          }
-          if (current.completedChunks !== undefined) {
-            cached.completedChunks = current.completedChunks;
-          }
-          if (current.totalChunks !== undefined) {
-            cached.totalChunks = current.totalChunks;
-          }
-
-          // Información sobre el proceso de merge (cuando se juntan los chunks descargados)
-          if (current.merging !== undefined) {
-            cached.merging = current.merging;
-            cached.mergeProgress = current.mergeProgress;
-            cached.mergeSpeed = current.mergeSpeed;
-          }
+        // Si la descarga está activa o acaba de cambiar, devolver un NUEVO objeto (shallow copy)
+        // Esto garantiza que el Virtual DOM detecte cambios en .percent, .speed, etc.
+        const isActive = current.state === 'progressing' || current.state === 'starting' || current.merging;
+        
+        if (isActive) {
+          return {
+            ...cached,
+            percent: current.percent,
+            downloadedBytes: current.downloadedBytes,
+            speed: current.speed,
+            eta: current.eta,
+            error: current.error,
+            remainingTime: current.remainingTime,
+            // Información de chunks
+            chunked: current.chunked,
+            chunkProgress: Array.isArray(current.chunkProgress) ? [...current.chunkProgress] : current.chunkProgress,
+            activeChunks: current.activeChunks,
+            completedChunks: current.completedChunks,
+            totalChunks: current.totalChunks,
+            // Información de merge
+            merging: current.merging,
+            mergeProgress: current.mergeProgress,
+            mergeSpeed: current.mergeSpeed
+          };
         }
+
+        // Si no está activa (ej: completada), podemos devolver la referencia cacheada para ahorrar memoria
+        return cached;
       });
     }
 
-    // Retornamos una copia superficial del array. Esto es importante porque Vue necesita
-    // detectar cambios en la referencia para saber que debe actualizar la UI. Si retornáramos
-    // el mismo array siempre, Vue podría no detectar los cambios internos.
+    // Retornamos una copia del array. 
     return [...cachedDownloadsList];
   });
 
