@@ -47,6 +47,17 @@
   --search-height: 60px;
   --padding-height: 50px;
   --base-content-height: calc(var(--titlebar-height) + var(--header-height) + var(--search-height) + var(--padding-height));
+
+  /* ========================================
+     BREAKPOINTS ESTÁNDAR
+     (Para referencia y uso futuro)
+     ======================================== */
+  --breakpoint-xs: 0px;      /* Móvil pequeño */
+  --breakpoint-sm: 576px;    /* Móvil grande */
+  --breakpoint-md: 768px;    /* Tablet */
+  --breakpoint-lg: 992px;    /* Desktop pequeño */
+  --breakpoint-xl: 1200px;   /* Desktop */
+  --breakpoint-2xl: 1400px;  /* Desktop grande */
 }
 
 /* Modo claro - cambiar color base del root */
@@ -426,7 +437,7 @@ body.light-mode #header {
   cursor: pointer;
   font-size: 14px;
   font-weight: 600;
-  transition: all 0.3s ease;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   white-space: nowrap;
   position: relative;
 }
@@ -631,6 +642,10 @@ body.light-mode #content-container::-webkit-scrollbar-thumb:hover {
 #favorites-section,
 #downloads-section {
   margin-bottom: var(--spacing-xl);
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  overflow: hidden;
 }
 
 #folders-section h2,
@@ -804,7 +819,7 @@ body.light-mode .folder-btn {
   cursor: pointer;
   font-size: 14px;
   font-weight: 600;
-  transition: all 0.2s ease;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
   white-space: nowrap;
 }
 
@@ -835,7 +850,7 @@ body.light-mode .folder-btn {
   cursor: pointer;
   font-size: 14px;
   font-weight: 600;
-  transition: all 0.2s ease;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .download-selected-btn:hover {
@@ -1284,7 +1299,7 @@ table button {
   border-radius: var(--radius-sm);
   cursor: pointer;
   font-weight: 500;
-  transition: all 0.2s ease;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 table button:hover:not(:disabled) {
@@ -1320,6 +1335,10 @@ table button:disabled {
   background-color: rgba(76, 175, 80, 0.1);
   border: 1px solid rgba(76, 175, 80, 0.3);
   border-radius: 4px;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  flex-wrap: wrap;
 }
 
 .bulk-info {
@@ -1327,6 +1346,7 @@ table button:disabled {
   color: var(--primary-color);
   font-weight: 500;
   margin-right: auto;
+  white-space: nowrap;
 }
 
 .btn-bulk {
@@ -1367,6 +1387,10 @@ table button:disabled {
   margin-bottom: 12px;
   background-color: #2d2d2d;
   padding: 12px 0;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  flex-wrap: wrap;
 }
 
 .downloads-header h2 {
@@ -1404,13 +1428,46 @@ table button:disabled {
   transform: translateY(0);
 }
 
+/* Contenedor de tabla de descargas */
+.downloads-table-container {
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  overflow-x: auto;
+  overflow-y: auto;
+  border: 1px solid #444;
+  border-radius: 6px;
+  margin-bottom: 16px;
+}
+
+.downloads-table-container::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+
+.downloads-table-container::-webkit-scrollbar-track {
+  background: #2a2a2a;
+  border-radius: 6px;
+}
+
+.downloads-table-container::-webkit-scrollbar-thumb {
+  background: #555;
+  border-radius: 6px;
+}
+
+.downloads-table-container::-webkit-scrollbar-thumb:hover {
+  background: #666;
+}
+
 /* Vista de lista de descargas */
 .downloads-table {
   width: 100%;
+  min-width: 100%;
   border-collapse: collapse;
   border: 1px solid #444;
   border-radius: 4px;
   overflow: hidden;
+  table-layout: fixed;
 }
 
 .downloads-table thead {
@@ -1439,7 +1496,6 @@ table button:disabled {
 }
 
 .download-name {
-  max-width: 300px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1449,7 +1505,7 @@ table button:disabled {
 }
 
 .download-process {
-  width: 150px;
+  overflow: hidden;
 }
 
 .progress-container {
@@ -1486,12 +1542,15 @@ table button:disabled {
 }
 
 .download-status {
-  width: 130px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .download-speed {
-  width: 100px;
   text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
 }
 
 .speed-badge {
@@ -1506,8 +1565,28 @@ table button:disabled {
 }
 
 .download-actions {
-  width: 120px;
   text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.download-date {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.download-path {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.download-observation {
+  min-width: 120px;
+  max-width: 180px;
+  width: auto;
+  white-space: nowrap;
 }
 
 .action-buttons {
@@ -3255,6 +3334,13 @@ body.light-mode .color-option-btn.active {
   border: 1px solid #333;
 }
 
+.filter-description {
+  color: #aaa;
+  font-size: 13px;
+  margin-bottom: 15px;
+  line-height: 1.5;
+}
+
 .text-filter-input {
   display: flex;
   gap: 10px;
@@ -3797,6 +3883,7 @@ body.light-mode .color-option-btn.active {
   .filters-btn {
     flex: 1 1 auto;
     min-width: calc(50% - 5px);
+    min-height: 44px; /* Área táctil mínima recomendada */
     font-size: 13px;
     padding: 8px 12px;
   }
@@ -4011,6 +4098,22 @@ body.light-mode .color-option-btn.active {
     min-width: calc(50% - 4px);
   }
 
+  /* Contenedor de tabla de descargas - asegurar que respete márgenes */
+  .downloads-table-container {
+    width: 100%;
+    max-width: 100%;
+    margin-left: 0;
+    margin-right: 0;
+  }
+
+  #downloads-section {
+    width: 100%;
+    max-width: 100%;
+    padding: 0;
+    margin-left: 0;
+    margin-right: 0;
+  }
+
   /* Paneles laterales - full screen */
   .settings-panel,
   .filters-panel {
@@ -4018,14 +4121,14 @@ body.light-mode .color-option-btn.active {
     right: 0;
   }
 
-  /* Botones de acción más pequeños */
+  /* Botones de acción - tamaño mínimo táctil (44x44px recomendado) */
   .btn-action {
-    min-width: 32px;
-    max-width: 32px;
-    width: 32px;
-    min-height: 32px;
-    max-height: 32px;
-    height: 32px;
+    min-width: 44px;
+    max-width: 44px;
+    width: 44px;
+    min-height: 44px;
+    max-height: 44px;
+    height: 44px;
     font-size: 14px;
   }
 
@@ -4061,6 +4164,22 @@ body.light-mode .color-option-btn.active {
     padding: 8px 12px;
     flex: 1 1 calc(33.333% - 6px);
     min-width: 120px;
+  }
+
+  /* Tabla de descargas - ajustar anchos de columnas */
+  .downloads-table .download-name {
+    max-width: 200px;
+    min-width: 120px;
+  }
+
+  .downloads-table .download-process {
+    max-width: 200px;
+    min-width: 120px;
+  }
+
+  .downloads-table .download-path {
+    max-width: 150px;
+    min-width: 100px;
   }
 }
 
@@ -4139,6 +4258,22 @@ body.light-mode .color-option-btn.active {
 
   .downloads-table .download-date {
     font-size: 12px;
+  }
+
+  /* Asegurar que el contenedor de descargas respete los márgenes */
+  #downloads-section {
+    width: 100%;
+    max-width: 100%;
+    padding: 0;
+    margin-left: 0;
+    margin-right: 0;
+  }
+
+  .downloads-table-container {
+    width: 100%;
+    max-width: 100%;
+    margin-left: 0;
+    margin-right: 0;
   }
 
   /* Acciones de descarga más compactas */

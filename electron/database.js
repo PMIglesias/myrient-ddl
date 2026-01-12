@@ -302,7 +302,7 @@ class DatabaseService {
             if (this.ftsType === 'fts5') {
               // Query optimizada con bm25() y mejor ordenamiento
               return this.db.prepare(`
-                        SELECT n.id, n.title, n.modified_date, n.type, n.parent_id,
+                        SELECT n.id, n.title, n.modified_date, n.type, n.parent_id, n.size,
                                bm25(${tableName}) AS relevance
                         FROM ${tableName} fts
                         INNER JOIN nodes n ON n.id = fts.rowid
@@ -313,7 +313,7 @@ class DatabaseService {
             } else {
               // FTS4: usar matchinfo() para ranking básico
               return this.db.prepare(`
-                        SELECT n.id, n.title, n.modified_date, n.type, n.parent_id,
+                        SELECT n.id, n.title, n.modified_date, n.type, n.parent_id, n.size,
                                matchinfo(${tableName}) AS matchinfo_data,
                                0 AS relevance
                         FROM ${tableName} fts
@@ -332,7 +332,7 @@ class DatabaseService {
             const tableName = this.ftsTable;
             if (this.ftsType === 'fts5') {
               return this.db.prepare(`
-                        SELECT n.id, n.title, n.modified_date, n.type, n.parent_id,
+                        SELECT n.id, n.title, n.modified_date, n.type, n.parent_id, n.size,
                                bm25(${tableName}) AS relevance
                         FROM ${tableName} fts
                         INNER JOIN nodes n ON n.id = fts.rowid
@@ -342,7 +342,7 @@ class DatabaseService {
                     `);
             } else {
               return this.db.prepare(`
-                        SELECT n.id, n.title, n.modified_date, n.type, n.parent_id,
+                        SELECT n.id, n.title, n.modified_date, n.type, n.parent_id, n.size,
                                0 AS relevance
                         FROM ${tableName} fts
                         INNER JOIN nodes n ON n.id = fts.rowid
@@ -356,7 +356,7 @@ class DatabaseService {
 
       // Búsqueda mejorada con LIKE (fallback) - optimizada con índices
       searchLike: this.db.prepare(`
-                SELECT id, title, modified_date, type, parent_id,
+                SELECT id, title, modified_date, type, parent_id, size,
                        CASE 
                            WHEN title LIKE ? THEN 1
                            WHEN title LIKE ? THEN 2
@@ -373,7 +373,7 @@ class DatabaseService {
 
       // Búsqueda LIKE sin paginación (para compatibilidad)
       searchLikeNoPagination: this.db.prepare(`
-                SELECT id, title, modified_date, type, parent_id,
+                SELECT id, title, modified_date, type, parent_id, size,
                        CASE 
                            WHEN title LIKE ? THEN 1
                            WHEN title LIKE ? THEN 2
@@ -390,7 +390,7 @@ class DatabaseService {
 
       // Búsqueda simple (compatibilidad)
       search: this.db.prepare(`
-                SELECT id, title, modified_date, type, parent_id
+                SELECT id, title, modified_date, type, parent_id, size
                 FROM nodes 
                 WHERE title LIKE ? ESCAPE '|'
                 ORDER BY title ASC

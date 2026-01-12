@@ -25,3 +25,6 @@ export { default as SettingsModal } from './modals/SettingsModal.vue';
 
 // Sections
 export { default as FavoritesSection } from './FavoritesSection.vue';
+
+// Filters
+export { default as FiltersPanel } from './FiltersPanel.vue';

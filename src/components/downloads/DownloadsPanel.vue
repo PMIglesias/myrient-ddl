@@ -101,9 +101,12 @@
             <th>Proceso</th>
             <th>Estado</th>
             <th>Velocidad</th>
-            <th>Tiempo Estimado</th>
+            <th class="download-date-header">Tiempo Estimado</th>
             <th>Ubicación</th>
-            <th v-if="pendingConfirmations.length > 0">
+            <th
+              v-if="pendingConfirmations.length > 0"
+              class="download-observation"
+            >
               Observación
             </th>
             <th>Acciones</th>
@@ -179,8 +182,17 @@
                   />
                   <span class="progress-text">{{ getPercentage(download) }}%</span>
                 </div>
+                <div
+                  v-else-if="download.queueStatus === 'completed'"
+                  class="progress-container"
+                >
+                  <progress
+                    :value="1"
+                    max="1"
+                  />
+                  <span class="progress-text">100%</span>
+                </div>
                 <span v-else-if="download.queueStatus === 'queued'">-</span>
-                <span v-else-if="download.queueStatus === 'completed'">100%</span>
                 <span v-else-if="download.queueStatus === 'error'">-</span>
 
                 <!-- Indicador de progreso granular para chunks (solo si está habilitado) -->
@@ -875,12 +887,18 @@ onUnmounted(() => {
   justify-content: space-between;
   align-items: center;
   margin-bottom: 16px;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  flex-wrap: wrap;
+  gap: 12px;
 }
 
 .header-actions {
   display: flex;
   gap: 8px;
   align-items: center;
+  flex-wrap: wrap;
 }
 
 .btn-header {
@@ -946,10 +964,14 @@ onUnmounted(() => {
 
 /* Contenedor de tabla con scroll virtual */
 .downloads-table-container {
-  overflow: auto;
+  overflow-x: auto;
+  overflow-y: auto;
   border: 1px solid #444;
   border-radius: 6px;
   max-height: 600px;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .downloads-table-container::-webkit-scrollbar {
@@ -974,7 +996,9 @@ onUnmounted(() => {
 /* Centrar encabezados de tabla */
 .downloads-table {
   width: 100%;
+  min-width: 100%;
   border-collapse: collapse;
+  table-layout: fixed;
 }
 
 .downloads-table thead {
@@ -986,14 +1010,92 @@ onUnmounted(() => {
 
 .downloads-table thead th {
   text-align: center;
-  padding: 12px 15px;
+  padding: 12px 8px;
   font-weight: 600;
   color: var(--primary-color);
   border-bottom: 2px solid #444;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
+
+.downloads-table td {
+  padding: 12px 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+}
+
 
 .downloads-table thead th.checkbox-col {
   text-align: center;
+  width: 4%;
+}
+
+/* Anchos de columnas en porcentajes para distribución automática */
+/* Sin columna de observación (8 columnas): Checkbox, Nombre, Proceso, Estado, Velocidad, Tiempo, Ubicación, Acciones */
+.downloads-table th:nth-child(1),
+.downloads-table td:nth-child(1) {
+  width: 4%;
+}
+
+.downloads-table th:nth-child(2),
+.downloads-table td:nth-child(2) {
+  width: 25%;
+}
+
+.downloads-table th:nth-child(3),
+.downloads-table td:nth-child(3) {
+  width: 18%;
+}
+
+.downloads-table th:nth-child(4),
+.downloads-table td:nth-child(4) {
+  width: 12%;
+}
+
+.downloads-table th:nth-child(5),
+.downloads-table td:nth-child(5) {
+  width: 9%;
+}
+
+.downloads-table th:nth-child(6),
+.downloads-table td:nth-child(6) {
+  width: 11%;
+}
+
+.downloads-table th:nth-child(7),
+.downloads-table td:nth-child(7) {
+  width: 16%;
+}
+
+.downloads-table th:nth-child(8),
+.downloads-table td:nth-child(8) {
+  width: 5%;
+}
+
+/* Con columna de observación (9 columnas): Checkbox, Nombre, Proceso, Estado, Velocidad, Tiempo, Ubicación, Observación, Acciones */
+/* Cuando hay 9 columnas, la 8va es Observación y la 9na es Acciones */
+/* Ajustar porcentajes cuando existe la columna de observación */
+.downloads-table th.download-observation,
+.downloads-table td.download-observation {
+  width: 10%;
+}
+
+/* Cuando hay observación, ajustar otras columnas para redistribuir espacio */
+.downloads-table:has(.download-observation) th:nth-child(2),
+.downloads-table:has(.download-observation) td:nth-child(2) {
+  width: 23%;
+}
+
+.downloads-table:has(.download-observation) th:nth-child(3),
+.downloads-table:has(.download-observation) td:nth-child(3) {
+  width: 16%;
+}
+
+.downloads-table:has(.download-observation) th:nth-child(7),
+.downloads-table:has(.download-observation) td:nth-child(7) {
+  width: 14%;
 }
 
 /* Layout horizontal para botones de acción */
@@ -1138,10 +1240,9 @@ onUnmounted(() => {
 
 /* Ajustar tamaño de columna de proceso para mostrar chunks */
 .download-process {
-  min-width: 200px;
-  max-width: 300px;
   vertical-align: top;
   padding: 12px 15px;
+  overflow: hidden;
 }
 
 .process-content {
@@ -1172,6 +1273,30 @@ onUnmounted(() => {
   font-size: 12px;
   color: #999;
   white-space: nowrap;
+}
+
+/* Estilos para el header de Tiempo Estimado */
+.download-date-header {
+  font-size: 0;
+}
+
+.download-date-header::before {
+  content: 'Tiempo Estimado';
+  font-size: 1rem;
+}
+
+/* Estilos para la columna de ubicación */
+.download-path {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Cambiar "Tiempo Estimado" a "ETA" en resoluciones menores a 1280px */
+@media (max-width: 1280px) {
+  .download-date-header::before {
+    content: 'ETA';
+  }
 }
 
 /* Responsive: en pantallas pequeñas, solo mostrar iconos */

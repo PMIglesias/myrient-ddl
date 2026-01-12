@@ -16,6 +16,7 @@ const showAdvancedFilters = ref(false);
 const advancedFilters = ref({
   includeText: [],
   excludeText: [],
+  consoles: [],
   includeTags: {
     regions: [],
     languages: [],
@@ -123,6 +124,7 @@ export function useFilters() {
     return (
       f.includeText.length > 0 ||
       f.excludeText.length > 0 ||
+      f.consoles.length > 0 ||
       f.includeTags.regions.length > 0 ||
       f.includeTags.languages.length > 0 ||
       f.includeTags.versions.length > 0 ||
@@ -142,6 +144,7 @@ export function useFilters() {
     return (
       f.includeText.length +
       f.excludeText.length +
+      f.consoles.length +
       f.includeTags.regions.length +
       f.includeTags.languages.length +
       f.includeTags.versions.length +
@@ -185,7 +188,41 @@ export function useFilters() {
         if (excludeMatch) return false;
       }
 
-      // 3. Filtros de etiquetas (inclusión)
+      // 3. Filtros de Sets y Proyectos de Preservación
+      if (advancedFilters.value.consoles.length > 0) {
+        // Obtener la ruta de la carpeta (fullPath para archivos, breadcrumbPath para carpetas)
+        const folderPath = item.fullPath || item.breadcrumbPath || '';
+        // Extraer el primer nivel de la ruta (nombre del set/proyecto de preservación)
+        const pathParts = folderPath.split('/').filter(p => p.trim());
+        const setName = pathParts.length > 0 ? pathParts[0] : '';
+        
+        // Si es una carpeta y no tiene fullPath, intentar obtener de displayTitle
+        if (!setName && item.type === 'folder' && item.displayTitle) {
+          const displayParts = item.displayTitle.split(' / ').filter(p => p.trim());
+          const setFromDisplay = displayParts.length > 0 ? displayParts[0] : '';
+          if (setFromDisplay) {
+            const setMatch = advancedFilters.value.consoles.some(set =>
+              setFromDisplay.toLowerCase().includes(set.toLowerCase()) ||
+              set.toLowerCase().includes(setFromDisplay.toLowerCase())
+            );
+            if (!setMatch) return false;
+          } else {
+            return false;
+          }
+        } else if (setName) {
+          // Verificar si el set/proyecto coincide con alguno seleccionado
+          const setMatch = advancedFilters.value.consoles.some(set =>
+            setName.toLowerCase().includes(set.toLowerCase()) ||
+            set.toLowerCase().includes(setName.toLowerCase())
+          );
+          if (!setMatch) return false;
+        } else {
+          // Si no se puede determinar el set/proyecto y hay filtros activos, excluir
+          return false;
+        }
+      }
+
+      // 4. Filtros de etiquetas (inclusión)
       const includeTagsActive =
         advancedFilters.value.includeTags.regions.length > 0 ||
         advancedFilters.value.includeTags.languages.length > 0 ||
@@ -204,7 +241,7 @@ export function useFilters() {
         if (!hasRequiredTag) return false;
       }
 
-      // 4. Filtros de etiquetas (exclusión)
+      // 5. Filtros de etiquetas (exclusión)
       const hasExcludedTag = tags.some(tag => {
         return (
           advancedFilters.value.excludeTags.regions.includes(tag) ||
@@ -246,6 +283,35 @@ export function useFilters() {
       versions: Array.from(tags.versions).sort(),
       other: Array.from(tags.other).sort(),
     };
+  };
+
+  /**
+   * Obtiene los Sets y Proyectos de Preservación disponibles de un conjunto de items
+   * Extrae el nombre del set/proyecto del primer nivel de la ruta (grupos de dumpers, fuentes como Internet Archive, etc.)
+   * @param {Array} items - Items de donde extraer sets/proyectos
+   * @returns {string[]} Array de nombres de sets/proyectos únicos y ordenados
+   */
+  const getAvailableConsoles = items => {
+    const consoles = new Set();
+
+    items.forEach(item => {
+      // Obtener la ruta de la carpeta
+      const folderPath = item.fullPath || item.breadcrumbPath || '';
+      const pathParts = folderPath.split('/').filter(p => p.trim());
+      
+      if (pathParts.length > 0) {
+        // El primer nivel de la ruta es normalmente el set/proyecto de preservación
+        consoles.add(pathParts[0]);
+      } else if (item.type === 'folder' && item.displayTitle) {
+        // Para carpetas, intentar obtener de displayTitle
+        const displayParts = item.displayTitle.split(' / ').filter(p => p.trim());
+        if (displayParts.length > 0) {
+          consoles.add(displayParts[0]);
+        }
+      }
+    });
+
+    return Array.from(consoles).sort();
   };
 
   // =====================
@@ -403,6 +469,7 @@ export function useFilters() {
     advancedFilters.value = {
       includeText: [],
       excludeText: [],
+      consoles: [],
       includeTags: {
         regions: [],
         languages: [],
@@ -450,6 +517,7 @@ export function useFilters() {
     // Filtrado
     applyFilters,
     getAvailableTags,
+    getAvailableConsoles,
 
     // Gestión de texto
     addIncludeText,

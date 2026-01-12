@@ -177,8 +177,8 @@
           <template v-else>
             <!-- Carpetas encontradas -->
             <FolderGrid
-              v-if="searchFolders.length > 0"
-              :folders="searchFolders"
+              v-if="filteredSearchFolders.length > 0"
+              :folders="filteredSearchFolders"
               title="Carpetas"
               :favorite-ids="favoriteIds"
               :is-search-result="true"
@@ -188,8 +188,8 @@
 
             <!-- Archivos encontrados -->
             <FileTable
-              v-if="searchFiles.length > 0"
-              :files="searchFiles"
+              v-if="filteredSearchFiles.length > 0"
+              :files="filteredSearchFiles"
               title="Archivos"
               :selected-files="selectedSearchFiles"
               :downloads="downloads"
@@ -206,7 +206,7 @@
 
             <!-- Sin resultados -->
             <div
-              v-if="!isSearching && searchFolders.length === 0 && searchFiles.length === 0"
+              v-if="!isSearching && filteredSearchFolders.length === 0 && filteredSearchFiles.length === 0"
               class="search-no-results"
               role="status"
               aria-live="polite"
@@ -261,6 +261,13 @@
       :toasts="toasts"
       @remove="removeToast"
     />
+
+    <!-- Panel de Filtros Avanzados -->
+    <FiltersPanel
+      v-if="showAdvancedFilters"
+      :search-results="searchResults"
+      @close="toggleAdvancedFilters"
+    />
   </div>
 </template>
 
@@ -279,6 +286,7 @@ import {
   FavoritesSection,
   ToastNotifications,
   ErrorBoundary,
+  FiltersPanel,
 } from './components';
 import LogsConsole from './components/LogsConsole.vue';
 
@@ -412,6 +420,7 @@ const {
   showAdvancedFilters,
   loadFilterPresets,
   toggleFiltersPanel: toggleAdvancedFilters,
+  applyFilters,
 } = useFilters();
 
 // Selección de archivos de búsqueda (local)
@@ -427,10 +436,10 @@ const toggleSearchFileSelection = fileId => {
 };
 
 const toggleSelectAllSearch = () => {
-  if (selectedSearchFiles.value.length === searchFiles.value.length) {
+  if (selectedSearchFiles.value.length === filteredSearchFiles.value.length) {
     selectedSearchFiles.value = [];
   } else {
-    selectedSearchFiles.value = searchFiles.value.map(f => f.id);
+    selectedSearchFiles.value = filteredSearchFiles.value.map(f => f.id);
   }
 };
 
@@ -509,6 +518,17 @@ const formattedUpdateDate = computed(() => {
   return new Date(lastUpdateDate.value).toLocaleDateString();
 });
 
+// Aplicar filtros avanzados a los resultados de búsqueda
+const filteredSearchFolders = computed(() => {
+  if (!applyFilters) return searchFolders.value;
+  return applyFilters(searchFolders.value);
+});
+
+const filteredSearchFiles = computed(() => {
+  if (!applyFilters) return searchFiles.value;
+  return applyFilters(searchFiles.value);
+});
+
 // =====================
 // MÉTODOS
 // =====================
@@ -543,7 +563,7 @@ const downloadSelectedFiles = () => {
 };
 
 const downloadSelectedSearchFiles = () => {
-  const filesToDownload = searchFiles.value.filter(f => selectedSearchFiles.value.includes(f.id));
+  const filesToDownload = filteredSearchFiles.value.filter(f => selectedSearchFiles.value.includes(f.id));
   filesToDownload.forEach(file => download(file));
   selectedSearchFiles.value = [];
 };

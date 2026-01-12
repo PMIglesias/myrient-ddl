@@ -347,6 +347,41 @@ const formatDate = dateStr => {
   }
 };
 
+const formatBytes = bytes => {
+  // Manejar null, undefined, o valores no numéricos
+  if (bytes === null || bytes === undefined || bytes === '') return '-';
+  
+  // Convertir a número - intentar parseInt primero para valores enteros, luego parseFloat
+  let numBytes;
+  if (typeof bytes === 'string') {
+    // Si es string, intentar convertir
+    numBytes = bytes.trim() === '' ? NaN : Number(bytes);
+  } else {
+    numBytes = Number(bytes);
+  }
+  
+  // Validar que sea un número válido y positivo
+  if (isNaN(numBytes) || !isFinite(numBytes) || numBytes < 0) return '-';
+  
+  if (numBytes === 0) return '0 B';
+  
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+  
+  // Calcular el índice de la unidad apropiada
+  // Si el valor es menor a 1024, el índice será 0 (bytes)
+  const i = Math.floor(Math.log(numBytes) / Math.log(k));
+  
+  // Asegurar que el índice esté en el rango válido
+  const unitIndex = Math.max(0, Math.min(i, sizes.length - 1));
+  const size = numBytes / Math.pow(k, unitIndex);
+  
+  // Formatear con máximo 2 decimales, pero sin decimales innecesarios
+  const formattedSize = size % 1 === 0 ? size.toFixed(0) : size.toFixed(2);
+  
+  return formattedSize + ' ' + sizes[unitIndex];
+};
+
 const isDownloadDisabled = fileId => {
   const download = props.downloads[fileId];
   return download && download.state !== 'interrupted';
