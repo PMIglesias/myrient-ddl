@@ -99,6 +99,24 @@ function createMainWindow() {
     mainWindow.webContents.openDevTools();
   }
 
+  // Redirigir mensajes de la consola de Chromium al logger de la aplicación
+  // Esto permite ver errores de JS y logs nativos en la consola interna de la app
+  mainWindow.webContents.on('console-message', (event, level, message, line, sourceId) => {
+    const levels = {
+      0: 'debug', // info/log
+      1: 'info',  // info
+      2: 'warn',  // warning
+      3: 'error'  // error
+    };
+    const levelName = levels[level] || 'info';
+    
+    // Evitar bucles infinitos filtrando mensajes que ya vienen del logger IPC
+    if (message.includes('backend-log')) return;
+
+    const consoleLog = logger.child('Chromium');
+    consoleLog[levelName](`${message} (${path.basename(sourceId)}:${line})`);
+  });
+
   // Deshabilitar el menú de aplicación para una interfaz más limpia
   Menu.setApplicationMenu(null);
 

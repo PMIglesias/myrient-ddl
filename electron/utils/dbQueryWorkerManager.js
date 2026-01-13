@@ -25,6 +25,7 @@ class DBQueryWorkerManager {
   constructor() {
     this.worker = null;
     this.isInitialized = false;
+    this.initializedTypes = new Set(); // Rastrear qué tipos de DB están inicializados en el worker
     this.pendingRequests = new Map(); // Map<requestId, {resolve, reject, timeout}>
     this.requestIdCounter = 0;
     this.workerPath = path.join(__dirname, '../workers/dbQueryWorker.js');
@@ -39,53 +40,62 @@ class DBQueryWorkerManager {
    * @returns {Promise<boolean>} true si se inicializó correctamente
    */
   async initialize(dbPath, dbType = 'queue') {
-    if (this.isInitialized && this.worker) {
-      log.debug('Worker ya está inicializado');
+    // Si este tipo específico ya está inicializado, no hacer nada
+    if (this.worker && this.initializedTypes.has(dbType)) {
       return true;
     }
 
     try {
-      log.info('Inicializando worker thread para queries SQL...');
+      // Crear worker si no existe
+      if (!this.worker) {
+        log.info('Iniciando worker thread para queries SQL...');
+        this.worker = new Worker(this.workerPath);
 
-      // Crear worker
-      this.worker = new Worker(this.workerPath);
+        // Configurar listeners
+        this.worker.on('message', (message) => {
+          this._handleWorkerMessage(message);
+        });
 
-      // Configurar listeners
-      this.worker.on('message', (message) => {
-        this._handleWorkerMessage(message);
-      });
+        this.worker.on('error', (error) => {
+          log.error('Error en worker thread:', error);
+          this._rejectAllPending('Worker error: ' + error.message);
+        });
 
-      this.worker.on('error', (error) => {
-        log.error('Error en worker thread:', error);
-        this._rejectAllPending('Worker error: ' + error.message);
-      });
-
-      this.worker.on('exit', (code) => {
-        if (code !== 0) {
-          log.error(`Worker thread terminó con código ${code}`);
-        } else {
-          log.debug('Worker thread terminado normalmente');
-        }
-        this.isInitialized = false;
-        this.worker = null;
-        this._rejectAllPending('Worker thread terminado');
-      });
+        this.worker.on('exit', (code) => {
+          if (code !== 0) {
+            log.error(`Worker thread terminó con código ${code}`);
+          } else {
+            log.debug('Worker thread terminado normalmente');
+          }
+          this.isInitialized = false;
+          this.initializedTypes.clear();
+          this.worker = null;
+          this._rejectAllPending('Worker thread terminado');
+        });
+      }
 
       // Inicializar worker con ruta de DB y tipo
+      log.debug(`Enviando solicitud de inicialización para DB tipo: ${dbType}`);
       const initResult = await this._sendRequest('init', { dbPath, dbType }, this.initTimeout);
 
       if (initResult.success) {
         this.isInitialized = true;
-        log.info('Worker thread inicializado correctamente');
+        this.initializedTypes.add(dbType);
+        log.info(`Worker thread inicializado correctamente para: ${dbType}`);
         return true;
       } else {
-        log.error('Error inicializando worker:', initResult.error);
-        this._cleanup();
+        log.error(`Error inicializando worker para ${dbType}:`, initResult.error);
+        // No limpiar todo el worker si falló solo un tipo, a menos que sea el único
+        if (this.initializedTypes.size === 0) {
+          this._cleanup();
+        }
         return false;
       }
     } catch (error) {
-      log.error('Error creando worker thread:', error);
-      this._cleanup();
+      log.error(`Error creando/inicializando worker thread para ${dbType}:`, error);
+      if (this.initializedTypes.size === 0) {
+        this._cleanup();
+      }
       return false;
     }
   }
@@ -212,6 +222,25 @@ class DBQueryWorkerManager {
       return result;
     } catch (error) {
       log.error('Error en searchFTS:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Obtiene todos los archivos de una carpeta recursivamente en el worker
+   * @param {number} folderId - ID de la carpeta
+   * @returns {Promise<Object>} Resultado con lista de archivos
+   */
+  async getAllFilesInFolder(folderId) {
+    if (!this.isInitialized) {
+      throw new Error('Worker no está inicializado');
+    }
+
+    try {
+      const result = await this._sendRequest('getAllFilesInFolder', { folderId });
+      return result;
+    } catch (error) {
+      log.error('Error en getAllFilesInFolder:', error);
       throw error;
     }
   }

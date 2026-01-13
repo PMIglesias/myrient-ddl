@@ -446,6 +446,45 @@ class DownloadManager {
   }
 
   /**
+   * Agrega múltiples descargas a la cola de una sola vez (optimizado)
+   * @param {Array<DownloadParams>} downloads - Lista de descargas a agregar
+   * @returns {number} Número de descargas agregadas
+   */
+  addManyToQueue(downloads) {
+    if (!Array.isArray(downloads) || downloads.length === 0) return 0;
+
+    const now = Date.now();
+    let addedCount = 0;
+
+    for (const download of downloads) {
+      if (this.isDownloadActive(download.id)) {
+        continue;
+      }
+
+      const enrichedDownload = {
+        ...download,
+        addedAt: now,
+        createdAt: now,
+        retryCount: 0,
+        priority: download.priority || DownloadPriority.NORMAL,
+      };
+
+      this.downloadQueue.push(enrichedDownload);
+      addedCount++;
+    }
+
+    if (addedCount > 0 && this.queueService) {
+      this.downloadQueue = this.queueService.sortQueue(this.downloadQueue);
+    }
+
+    if (addedCount > 0) {
+      log.info(`Agregadas ${addedCount} descargas a la cola en batch`);
+    }
+
+    return addedCount;
+  }
+
+  /**
    * Agrega una descarga a la cola en memoria
    *
    * Agrega una descarga a la cola local en memoria (no persiste en SQLite).
@@ -497,6 +536,27 @@ class DownloadManager {
 
     log.info(`Descarga agregada a cola: ${download.title} (posición ${position})`);
     return position;
+  }
+
+  // =============================
+  // GESTIÓN DE COLA
+  // =============================
+
+  /**
+   * Pausa el procesamiento de la cola
+   * Evita que se inicien nuevas descargas
+   */
+  pauseQueue() {
+    this.processing = true; // Bloquea el inicio de nuevas descargas
+    log.info('Procesamiento de cola pausado (Shutdown)');
+  }
+
+  /**
+   * Reanuda el procesamiento de la cola
+   */
+  resumeQueue() {
+    this.processing = false;
+    log.info('Procesamiento de cola reanudado');
   }
 
   /**
@@ -2156,9 +2216,10 @@ class DownloadManager {
             }
             fs.renameSync(partialFilePath, savePath);
             const download = this.getActiveDownload(id);
+            const downloadTitle = download?.title || path.basename(savePath);
             log.info('Descarga simple completada', {
               downloadId: id,
-              title,
+              title: downloadTitle,
               savePath,
               fileSize,
               totalBytes: expectedFileSize,
@@ -3275,8 +3336,14 @@ class DownloadManager {
     const maxSize = config.downloads.maxWriteBufferSize || 16 * 1024 * 1024;
     const defaultSize = config.downloads.writeBufferSize || 1024 * 1024;
 
+    // REFUERZO FASE 1: Detectar si es probable que sea un SSD o sistema de alto rendimiento
+    // En Windows y macOS, la mayoría de los sistemas modernos usan SSD.
+    // Para HDD (o sistemas donde no estamos seguros), un buffer más pequeño evita latencia de cabezal.
+    const isHighPerformanceSystem = process.platform === 'win32' || process.platform === 'darwin';
+    const performanceMultiplier = isHighPerformanceSystem ? 2 : 1;
+
     if (!fileSize || fileSize === 0) {
-      return defaultSize;
+      return defaultSize * performanceMultiplier;
     }
 
     // Para archivos pequeños, usar buffer más pequeño
@@ -3288,11 +3355,11 @@ class DownloadManager {
     // Para archivos grandes, usar buffer más grande (hasta el máximo)
     if (fileSize > 100 * 1024 * 1024) {
       // > 100MB
-      return Math.min(maxSize, Math.max(defaultSize * 2, minSize));
+      return Math.min(maxSize, Math.max(defaultSize * performanceMultiplier, minSize));
     }
 
-    // Archivos medianos: usar tamaño por defecto
-    return defaultSize;
+    // Archivos medianos: usar tamaño por defecto escalado
+    return Math.min(maxSize, defaultSize * performanceMultiplier);
   }
 
   /**

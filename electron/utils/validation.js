@@ -138,7 +138,6 @@ function sanitizeSearchTerm(term) {
  */
 function validateAndSanitizeDownloadPath(downloadPath) {
   const path = require('path');
-  const fs = require('fs');
   const os = require('os');
   const { app } = require('electron');
 
@@ -146,45 +145,39 @@ function validateAndSanitizeDownloadPath(downloadPath) {
     return { valid: false, error: 'Ruta de descarga no proporcionada' };
   }
 
-  // Normalizar ruta
-  let normalized;
   try {
-    normalized = path.normalize(downloadPath.trim());
-  } catch (error) {
-    return { valid: false, error: 'Ruta de descarga inválida' };
-  }
+    // 1. Resolver ruta absoluta y normalizar
+    const resolvedPath = path.resolve(downloadPath.trim());
+    
+    // 2. Definir directorios base permitidos (Whitelist)
+    const allowedBaseDirs = [
+      os.homedir(),
+      app.getPath('downloads'),
+      app.getPath('desktop'),
+      app.getPath('documents'),
+      path.join(app.getPath('userData'), 'downloads'),
+    ].map(dir => path.resolve(dir).toLowerCase());
 
-  // Verificar que no contenga path traversal
-  if (normalized.includes('..') || normalized.includes('~')) {
-    return { valid: false, error: 'Ruta de descarga contiene path traversal' };
-  }
-
-  // Verificar que esté dentro de directorios permitidos
-  const allowedBaseDirs = [
-    os.homedir(),
-    path.join(app.getPath('userData'), 'downloads'),
-    path.join(os.homedir(), 'Downloads'),
-    path.join(os.homedir(), 'Desktop'),
-  ];
-
-  try {
-    const resolved = path.resolve(normalized);
+    // 3. Verificar si la ruta resuelta empieza con alguno de los directorios permitidos
+    const resolvedLower = resolvedPath.toLowerCase();
     const isAllowed = allowedBaseDirs.some(baseDir => {
-      try {
-        const resolvedBase = path.resolve(baseDir);
-        return resolved.startsWith(resolvedBase);
-      } catch {
-        return false;
-      }
+      // Usar endsWith con separador para asegurar coincidencia exacta de carpeta
+      const baseWithSep = baseDir.endsWith(path.sep) ? baseDir : baseDir + path.sep;
+      return resolvedLower === baseDir || resolvedLower.startsWith(baseWithSep);
     });
 
     if (!isAllowed) {
-      return { valid: false, error: 'Ruta de descarga fuera de directorios permitidos' };
+      log.warn(`Intento de acceso a ruta no permitida: ${resolvedPath}`);
+      return { 
+        valid: false, 
+        error: 'Por seguridad, las descargas solo se permiten en carpetas de usuario (Descargas, Escritorio, etc.)' 
+      };
     }
 
-    return { valid: true, path: resolved };
+    return { valid: true, path: resolvedPath };
   } catch (error) {
-    return { valid: false, error: `Error validando ruta: ${error.message}` };
+    log.error('Error validando ruta de descarga:', error);
+    return { valid: false, error: 'Error interno validando la ruta' };
   }
 }
 
@@ -254,33 +247,40 @@ function sanitizeFileName(fileName) {
  */
 function validateDownloadParams(params) {
   // Intentar usar validación de Zod si los schemas están disponibles
+  let resultData = params;
   if (schemas && schemas.validateDownloadParams) {
     const result = schemas.validateDownloadParams(params);
-    return {
-      valid: result.success,
-      data: result.data,
-      error: result.error,
-    };
+    if (!result.success) {
+      return { valid: false, error: result.error };
+    }
+    resultData = result.data;
+  } else {
+    // Validación básica cuando Zod no está disponible
+    if (!params) {
+      return { valid: false, error: 'Parámetros no proporcionados' };
+    }
+    if (!params.id || typeof params.id !== 'number') {
+      return { valid: false, error: 'ID inválido' };
+    }
+    if (!params.title || typeof params.title !== 'string' || params.title.trim().length === 0) {
+      return { valid: false, error: 'Título inválido' };
+    }
+    resultData = { ...params };
   }
 
-  // Validación básica cuando Zod no está disponible
-  if (!params) {
-    return { valid: false, error: 'Parámetros no proporcionados' };
+  // REFUERZO FASE 4: Validar y sanitizar la ruta de descarga si se proporciona
+  if (resultData.downloadPath) {
+    const pathValidation = validateAndSanitizeDownloadPath(resultData.downloadPath);
+    if (!pathValidation.valid) {
+      return { valid: false, error: pathValidation.error };
+    }
+    resultData.downloadPath = pathValidation.path;
   }
 
-  if (!params.id || typeof params.id !== 'number') {
-    return { valid: false, error: 'ID inválido' };
-  }
+  // REFUERZO FASE 4: Sanitizar el nombre del archivo (title)
+  resultData.title = sanitizeFileName(resultData.title);
 
-  if (!params.title || typeof params.title !== 'string' || params.title.trim().length === 0) {
-    return { valid: false, error: 'Título inválido' };
-  }
-
-  if (params.title.length > 500) {
-    return { valid: false, error: 'Título demasiado largo' };
-  }
-
-  return { valid: true, data: params };
+  return { valid: true, data: resultData };
 }
 
 /**
@@ -449,29 +449,34 @@ function validateConfigFilename(filename) {
 // params: Objeto con folderId y opcionales como downloadPath, preserveStructure, etc.
 // Retorna: Objeto con valid (boolean), data (parámetros validados), y error (mensaje si inválido)
 function validateDownloadFolderParams(params) {
+  let resultData = params;
   if (schemas && schemas.validateDownloadFolderParams) {
     const result = schemas.validateDownloadFolderParams(params);
-    return {
-      valid: result.success,
-      data: result.data,
-      error: result.error,
-    };
+    if (!result.success) {
+      return { valid: false, error: result.error };
+    }
+    resultData = result.data;
+  } else {
+    // Validación básica
+    if (!params) {
+      return { valid: false, error: 'Parámetros no proporcionados' };
+    }
+    if (!params.folderId || typeof params.folderId !== 'number') {
+      return { valid: false, error: 'ID de carpeta inválido' };
+    }
+    resultData = { ...params };
   }
 
-  // Validación básica: verificar que los parámetros existan y el folderId sea válido
-  if (!params) {
-    return { valid: false, error: 'Parámetros no proporcionados' };
+  // REFUERZO FASE 4: Validar y sanitizar la ruta de descarga si se proporciona
+  if (resultData.downloadPath) {
+    const pathValidation = validateAndSanitizeDownloadPath(resultData.downloadPath);
+    if (!pathValidation.valid) {
+      return { valid: false, error: pathValidation.error };
+    }
+    resultData.downloadPath = pathValidation.path;
   }
 
-  if (!params.folderId || typeof params.folderId !== 'number') {
-    return { valid: false, error: 'ID de carpeta inválido' };
-  }
-
-  if (params.folderId <= 0) {
-    return { valid: false, error: 'ID de carpeta debe ser mayor a 0' };
-  }
-
-  return { valid: true, data: params };
+  return { valid: true, data: resultData };
 }
 
 /**

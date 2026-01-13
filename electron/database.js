@@ -161,11 +161,19 @@ class DatabaseService {
       return false;
     }
 
-    // Establecer conexión a la base de datos SQLite en modo solo lectura
-    // readonly: true previene modificaciones accidentales a la base de datos
-    // fileMustExist: true garantiza que la base de datos existe antes de conectar
+    // Establecer conexión a la base de datos SQLite
+    // Primero intentar abrir en modo lectura/escritura para crear índices si faltan
     try {
+      this.db = new Database(dbPath, { fileMustExist: true });
+      
+      // CRÍTICO: Asegurar que existan índices para rendimiento óptimo
+      // El índice en parent_id es esencial para la navegación y descargas de carpetas
+      this.db.exec('CREATE INDEX IF NOT EXISTS idx_nodes_parent_id ON nodes(parent_id)');
+      
+      // Cerrar y reabrir en modo solo lectura para mayor seguridad durante el uso normal
+      this.db.close();
       this.db = new Database(dbPath, { readonly: true, fileMustExist: true });
+      
       this._prepareStatements();
 
       // Inicializar worker thread para búsquedas FTS pesadas (opcional)
@@ -945,9 +953,9 @@ class DatabaseService {
   /**
    * Obtiene todos los archivos de una carpeta recursivamente
    * @param {number} folderId - ID de la carpeta
-   * @returns {Object} Resultado con lista de archivos
+   * @returns {Promise<Object>} Resultado con lista de archivos
    */
-  getAllFilesInFolder(folderId) {
+  async getAllFilesInFolder(folderId) {
     if (!this.db) {
       return { success: false, error: 'Base de datos no disponible' };
     }
@@ -963,7 +971,21 @@ class DatabaseService {
         return { success: false, error: 'El nodo especificado no es una carpeta' };
       }
 
-      // Obtener todos los archivos recursivamente
+      // Decidir si usar worker thread para la query recursiva
+      if (this.workerManager.isInitialized) {
+        try {
+          const workerResult = await this.workerManager.getAllFilesInFolder(folderId);
+          if (workerResult.success) {
+            log.debug(`Archivos encontrados en worker para carpeta ${folderId}: ${workerResult.data.length} archivos`);
+            return workerResult;
+          }
+          throw new Error(workerResult.error || 'Error desconocido en worker');
+        } catch (workerError) {
+          log.warn('Error en worker para getAllFilesInFolder, usando modo síncrono:', workerError.message);
+        }
+      }
+
+      // Obtener todos los archivos recursivamente (modo síncrono - fallback)
       const files = this.statements.getAllFilesRecursive.all(folderId);
 
       log.debug(`Archivos encontrados en carpeta ${folderId}: ${files.length} archivos`);

@@ -536,7 +536,7 @@ class DownloadService extends BaseService {
       }
 
       // Validar ruta de descarga (opcional pero si está presente debe ser válida)
-      if (downloadPath !== undefined && downloadPath !== null) {
+      if (downloadPath !== undefined && downloadPath !== null && downloadPath.trim() !== '') {
         if (typeof downloadPath !== 'string') {
           return { valid: false, error: 'Ruta de descarga debe ser una cadena de texto' };
         }
@@ -587,9 +587,10 @@ class DownloadService extends BaseService {
    * @param {Object} folderParams - Parámetros de descarga de carpeta
    * @param {number} fileCount - Número de archivos en la carpeta
    * @param {Object} currentStats - Estadísticas actuales del sistema
+   * @param {Object} [overrides={}] - Opciones para omitir límites (útil para descargas manuales)
    * @returns {Object} - Resultado de validación
    */
-  canDownloadFolder(folderParams, fileCount = 0, currentStats = {}) {
+  canDownloadFolder(folderParams, fileCount = 0, currentStats = {}, overrides = {}) {
     try {
       // Validar parámetros primero
       const validation = this.validateDownloadFolderParams(folderParams);
@@ -609,8 +610,8 @@ class DownloadService extends BaseService {
       }
 
       // Verificar límites de descarga de carpetas
-      // Usar límite razonable: 1000 archivos por carpeta (configurable si existe)
-      const maxFilesPerFolder = config.downloads?.maxFilesPerFolder || 1000;
+      // Si hay un override, usamos ese valor, sino el de config, sino el default de 1000
+      const maxFilesPerFolder = overrides.maxFilesPerFolder || config.downloads?.maxFilesPerFolder || 1000;
       if (fileCount > maxFilesPerFolder) {
         return {
           canDownload: false,
@@ -621,8 +622,7 @@ class DownloadService extends BaseService {
       }
 
       // Verificar límites de cola total
-      // Usar límite razonable: 1000 descargas en cola (configurable si existe)
-      const maxQueueSize = config.downloads?.maxQueueSize || 1000;
+      const maxQueueSize = overrides.maxQueueSize || config.downloads?.maxQueueSize || 1000;
       const currentQueueSize = currentStats.queuedInMemory || currentStats.queued || 0;
       const availableQueueSlots = maxQueueSize - currentQueueSize;
 

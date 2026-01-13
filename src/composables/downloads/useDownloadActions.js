@@ -359,7 +359,9 @@ export function useDownloadActions(
 
     const validStates = ['cancelled', 'interrupted', 'failed', 'waiting'];
     const validQueueStatuses = ['error', 'cancelled'];
-    if (!validStates.includes(dl.state) && !validQueueStatuses.includes(dl.queueStatus)) {
+    // Permitir reiniciar descargas en estado 'queued' si tienen un error
+    const isQueuedWithError = (dl.state === 'queued' || dl.queueStatus === 'queued') && dl.error;
+    if (!validStates.includes(dl.state) && !validQueueStatuses.includes(dl.queueStatus) && !isQueuedWithError) {
       console.debug(
         `[useDownloads] No se puede reiniciar descarga ${downloadId}: estado ${dl.state || dl.queueStatus}`
       );

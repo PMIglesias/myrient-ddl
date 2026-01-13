@@ -153,25 +153,15 @@
         <div class="setting-item">
           <label>Historial de descargas</label>
           <div class="setting-control">
-            <div class="history-controls">
-              <button
-                class="clean-history-btn"
-                title="Eliminar registros de más de 30 días"
-                aria-label="Limpiar historial de descargas de más de 30 días"
-                @click="$emit('clean-history', 30)"
-              >
-                🧹 Limpiar historial (30 días)
-              </button>
-              <button
-                class="clean-history-btn small"
-                title="Eliminar registros de más de 7 días"
-                aria-label="Limpiar historial de descargas de más de 7 días"
-                @click="$emit('clean-history', 7)"
-              >
-                7 días
-              </button>
-            </div>
-            <span class="setting-hint">Elimina registros antiguos de la base de datos para liberar espacio</span>
+            <button
+              class="danger-btn"
+              title="Eliminar todo el historial de descargas completadas, fallidas y canceladas"
+              aria-label="Limpiar todo el historial de descargas"
+              @click="$emit('clear-history')"
+            >
+              🗑️ Limpiar todo el historial
+            </button>
+            <span class="setting-hint">Elimina todos los registros de descargas completadas, fallidas y canceladas de la base de datos</span>
             <div
               v-if="cleanupStats"
               class="cleanup-stats"
@@ -392,6 +382,7 @@ const emit = defineEmits([
   'select-folder',
   'clear-favorites',
   'clean-history',
+  'clear-history',
   'set-primary-color',
 ]);
 

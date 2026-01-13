@@ -61,32 +61,36 @@ function configureLogger(options = {}) {
 
   // Transporte personalizado para enviar logs al frontend vía IPC
   // Solo se activa si hay una ventana disponible
-  log.transports.ipc = {
-    level: isDev ? consoleLevel : 'info',
-    format: '[{h}:{i}:{s}.{ms}] [{level}]{scope} {text}',
-    write: info => {
-      try {
-        if (getMainWindowFn) {
-          const mainWindow = getMainWindowFn();
-          if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents) {
-            // Formatear el log para enviarlo al frontend
-            const logEntry = {
-              timestamp: new Date().toISOString(),
-              level: info.level.toUpperCase(),
-              scope: info.scope || null,
-              message: info.data || [info.text],
-              mode: isDev ? 'development' : 'production',
-              source: 'backend',
-            };
-            mainWindow.webContents.send('backend-log', logEntry);
-          }
-        }
-      } catch (error) {
-        // Silenciar errores al enviar logs para evitar bucles infinitos
-        // Si falla el IPC, simplemente no se envía al frontend
+  const ipcTransport = (info) => {
+    try {
+      // Evitar bucles: No enviar al frontend logs que ya vienen del propio frontend
+      if (info.scope && info.scope.startsWith('Frontend')) {
+        return;
       }
-    },
+
+      if (getMainWindowFn) {
+        const mainWindow = getMainWindowFn();
+        if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents) {
+          // Formatear el log para enviarlo al frontend
+          const logEntry = {
+            timestamp: new Date().toISOString(),
+            level: info.level.toUpperCase(),
+            scope: info.scope || null,
+            message: info.data || [info.text],
+            mode: isDev ? 'development' : 'production',
+            source: 'backend',
+          };
+          mainWindow.webContents.send('backend-log', logEntry);
+        }
+      }
+    } catch (error) {
+      // Silenciar errores al enviar logs para evitar bucles infinitos
+    }
   };
+
+  // Configurar nivel y formato del transporte IPC
+  ipcTransport.level = isDev ? 'debug' : 'info';
+  log.transports.ipc = ipcTransport;
 
   // Configuración global del logger
 

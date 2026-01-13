@@ -39,26 +39,35 @@ import { selectedDownloads, selectedHistoryDownloads } from './useDownloadState'
  */
 export function useDownloadSelection() {
   const toggleSelectDownload = id => {
-    if (selectedDownloads.value.has(id)) {
-      selectedDownloads.value.delete(id);
+    const newSet = new Set(selectedDownloads.value);
+    if (newSet.has(id)) {
+      newSet.delete(id);
     } else {
-      selectedDownloads.value.add(id);
+      newSet.add(id);
     }
+    selectedDownloads.value = newSet;
   };
 
   const toggleSelectHistoryDownload = id => {
-    if (selectedHistoryDownloads.value.has(id)) {
-      selectedHistoryDownloads.value.delete(id);
+    const newSet = new Set(selectedHistoryDownloads.value);
+    if (newSet.has(id)) {
+      newSet.delete(id);
     } else {
-      selectedHistoryDownloads.value.add(id);
+      newSet.add(id);
     }
+    selectedHistoryDownloads.value = newSet;
   };
 
   const toggleSelectAllHistoryDownloads = allDownloads => {
+    if (!allDownloads || allDownloads.length === 0) {
+      selectedHistoryDownloads.value = new Set();
+      return;
+    }
+
     if (selectedHistoryDownloads.value.size === allDownloads.length) {
-      selectedHistoryDownloads.value.clear();
+      selectedHistoryDownloads.value = new Set();
     } else {
-      allDownloads.forEach(d => selectedHistoryDownloads.value.add(d.id));
+      selectedHistoryDownloads.value = new Set(allDownloads.map(d => d.id));
     }
   };
 

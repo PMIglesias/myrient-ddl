@@ -406,6 +406,21 @@ export const cleanHistory = async (daysOld = 30) => {
   }
 };
 
+/**
+ * Limpia todo el historial de descargas (sin importar la fecha)
+ */
+export const clearHistory = async () => {
+  const api = getApi();
+  if (!api) return { success: false, error: API_ERRORS.NOT_AVAILABLE };
+
+  try {
+    return await api.clearHistory();
+  } catch (error) {
+    apiLogger.error('Error limpiando todo el historial:', error);
+    return { success: false, error: error.message || GENERAL_ERRORS.UNKNOWN };
+  }
+};
+
 // =====================
 // CONFIGURACIÓN
 // =====================
@@ -506,6 +521,21 @@ export const onDownloadProgress = callback => {
 };
 
 /**
+ * Suscribe a eventos de progreso de descarga por lotes (Batch)
+ * @param {Function} callback - Función a ejecutar cuando hay un lote de progreso
+ * @returns {Function} Función para desuscribirse
+ */
+export const onDownloadProgressBatch = callback => {
+  const api = getApi();
+  if (!api) {
+    apiLogger.warn('No se puede suscribir a eventos: API no disponible');
+    return () => {};
+  }
+
+  return api.on('download-progress-batch', callback);
+};
+
+/**
  * Suscribe a eventos de limpieza de historial
  * @param {Function} callback - Función a ejecutar cuando se limpia el historial
  * @returns {Function} Función para desuscribirse
@@ -573,6 +603,7 @@ export default {
   deleteDownload,
   getDownloadStats,
   cleanHistory,
+  clearHistory,
 
   // Configuración
   readConfigFile,
@@ -586,6 +617,7 @@ export default {
 
   // Eventos
   onDownloadProgress,
+  onDownloadProgressBatch,
   onHistoryCleaned,
   onDownloadsRestored,
   onErrorNotification,

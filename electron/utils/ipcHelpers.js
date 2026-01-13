@@ -128,29 +128,31 @@ function sendDownloadProgress(mainWindow, download, options = {}) {
  *
  * @param {Object} mainWindow - Ventana principal de Electron
  * @param {Array<Object>} downloads - Array de objetos de descarga
+ * @param {boolean} [includeMetadata=true] - Si incluir títulos y metadatos básicos
  * @returns {void}
- *
- * @example
- * // Enviar actualizaciones de múltiples descargas
- * sendBatchDownloadProgress(mainWindow, [
- *   { id: 1, state: 'progressing', progress: 0.5 },
- *   { id: 2, state: 'queued', progress: 0 },
- * ]);
  */
-function sendBatchDownloadProgress(mainWindow, downloads) {
+function sendBatchDownloadProgress(mainWindow, downloads, includeMetadata = true) {
   if (!mainWindow || mainWindow.isDestroyed() || !Array.isArray(downloads)) {
     return;
   }
 
   // Limitar número de descargas en batch para prevenir payloads grandes
   const MAX_BATCH_SIZE = 50;
-  const batch = downloads.slice(0, MAX_BATCH_SIZE).map(download => ({
-    id: download.id,
-    state: download.state || 'queued',
-    progress: download.progress ?? 0,
-    downloadedBytes: download.downloadedBytes ?? 0,
-    totalBytes: download.totalBytes ?? 0,
-  }));
+  const batch = downloads.slice(0, MAX_BATCH_SIZE).map(download => {
+    const item = {
+      id: download.id,
+      state: download.state || 'queued',
+      progress: download.progress ?? 0,
+      downloadedBytes: download.downloadedBytes ?? 0,
+      totalBytes: download.totalBytes ?? 0,
+    };
+
+    if (includeMetadata && download.title) {
+      item.title = download.title;
+    }
+
+    return item;
+  });
 
   const payload = { type: 'batch', downloads: batch };
   const payloadSize = JSON.stringify(payload).length;
@@ -161,7 +163,7 @@ function sendBatchDownloadProgress(mainWindow, downloads) {
     const chunkSize = Math.floor(MAX_BATCH_SIZE / 2);
     for (let i = 0; i < batch.length; i += chunkSize) {
       const chunk = batch.slice(i, i + chunkSize);
-      sendBatchDownloadProgress(mainWindow, chunk);
+      sendBatchDownloadProgress(mainWindow, chunk, includeMetadata);
     }
     return;
   }

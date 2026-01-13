@@ -29,6 +29,7 @@
 
 const config = require('./config');
 const { logger } = require('./utils');
+const { sendBatchDownloadProgress } = require('./utils/ipcHelpers');
 
 const log = logger.child('ProgressThrottler');
 
@@ -203,11 +204,12 @@ class ProgressThrottler {
 
     const updateCount = this.pendingUpdates.size;
     
-    this.pendingUpdates.forEach(progressInfo => {
-      this.mainWindow.webContents.send('download-progress', progressInfo);
-    });
+    // REFACTORIZADO FASE 2: Usar envío por lotes (Batching)
+    // Convertimos el Map de actualizaciones a un array y lo enviamos en un solo mensaje IPC
+    const updatesArray = Array.from(this.pendingUpdates.values());
+    sendBatchDownloadProgress(this.mainWindow, updatesArray);
 
-    log.debug(`Enviado lote de ${updateCount} actualizaciones de progreso`);
+    log.debug(`Enviado lote de ${updateCount} actualizaciones en un solo mensaje IPC`);
     this.pendingUpdates.clear();
   }
 

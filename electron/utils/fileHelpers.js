@@ -50,11 +50,33 @@ const log = logger.child('FileUtils');
  * // Resultado: 'archivo_sub_carpeta.zip'
  */
 function sanitizeFilename(filename) {
-  return filename
+  if (!filename || typeof filename !== 'string') return 'unnamed';
+
+  // 1. Remover caracteres inválidos en Windows y otros SO
+  let sanitized = filename
     .replace(/[<>:"|?*]/g, '_')
     .replace(/\\/g, '_')
     .replace(/\//g, '_')
+    .replace(/[\x00-\x1f\x7f]/g, '') // Caracteres de control
     .trim();
+
+  // 2. Prevenir nombres reservados en Windows
+  const reservedNames = /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\..*)?$/i;
+  if (reservedNames.test(sanitized)) {
+    sanitized = `_${sanitized}`;
+  }
+
+  // 3. Limitar longitud (255 es el estándar de muchos sistemas de archivos)
+  if (sanitized.length > 255) {
+    sanitized = sanitized.slice(0, 255);
+  }
+
+  // 4. Asegurar que no quede vacío o solo con puntos
+  if (!sanitized || sanitized === '.' || sanitized === '..') {
+    sanitized = 'unnamed';
+  }
+
+  return sanitized;
 }
 
 // Sanitiza una ruta completa aplicando sanitización a cada segmento individualmente

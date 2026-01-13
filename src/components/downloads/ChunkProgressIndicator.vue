@@ -24,8 +24,12 @@
         :title="getChunkTooltip(chunk)"
       >
         <div
+          v-if="chunk.progress > 0"
           class="chunk-bar"
-          :style="{ width: chunk.progress * 100 + '%' }"
+          :style="{ 
+            width: chunk.progress * 100 + '%',
+            transition: chunk.progress >= 1 ? 'width 0.3s ease' : 'none'
+          }"
         />
         <span class="chunk-index">{{ chunk.index }}</span>
         <span

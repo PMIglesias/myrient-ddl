@@ -2160,8 +2160,9 @@ class ChunkedDownloader {
                 completedChunks: this.chunks.length,
               });
 
-              // Usar setTimeout para dar tiempo al frontend de procesar el update al 100%
-              // antes de cambiar el estado a 'completed'
+              // CRÍTICO: Usar setTimeout con delay para asegurar que el frontend
+              // procese completamente el mensaje de progreso al 100% antes de cambiar el estado.
+              // Reducido a 300ms para archivos pequeños que terminan rápido
               setTimeout(() => {
                 // Marcar que el merge ya no está en progreso antes de limpiar
                 this.mergeInProgress = false;
@@ -2192,23 +2193,31 @@ class ChunkedDownloader {
                   }
                 }
 
-                // Actualizar BD en batch
+                // Cambiar estado a 'completed' ANTES de actualizar BD
+                // Esto asegura que el evento de completado se envíe incluso si hay un error en BD
+                this.state = 'completed';
+
+                // Notificar completado INMEDIATAMENTE (esto cambiará el estado a 'completed' en el frontend)
+                // No esperar a que termine _updateChunksInDB para evitar que se quede en 'merging'
+                this.onComplete({
+                  downloadId: this.downloadId,
+                  savePath: this.savePath,
+                  totalBytes: this.totalBytes,
+                  duration: message.duration,
+                });
+
+                // Actualizar BD en batch en segundo plano (no bloquear el completado)
                 this._updateChunksInDB()
                   .then(() => {
-                    this.state = 'completed';
-
-                    // Notificar completado (esto cambiará el estado a 'completed' en el frontend)
-                    this.onComplete({
-                      downloadId: this.downloadId,
-                      savePath: this.savePath,
-                      totalBytes: this.totalBytes,
-                      duration: message.duration,
-                    });
-
+                    log.debug(`Chunks actualizados en BD para descarga ${this.downloadId}`);
                     resolve();
                   })
-                  .catch(reject);
-              }, 200); // 200ms de delay para asegurar que el frontend procese el 100%
+                  .catch(error => {
+                    // Log error pero no fallar - la descarga ya está completada
+                    log.warn(`Error actualizando chunks en BD para descarga ${this.downloadId}:`, error.message);
+                    resolve(); // Resolver de todas formas ya que la descarga fue exitosa
+                  });
+              }, 300); // 300ms de delay - balance entre mostrar el 100% y no hacer esperar demasiado
               break;
 
             case 'error':

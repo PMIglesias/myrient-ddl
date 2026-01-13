@@ -79,6 +79,21 @@ function initializeDatabase(dbPath, dbType = 'queue') {
       // Catálogo: statements para FTS se prepararán dinámicamente
       statements.catalog = {
         searchFTS: null,
+        getAllFilesRecursive: db.prepare(`
+          WITH RECURSIVE folder_tree AS (
+              SELECT id, parent_id, title, type, url, size, modified_date
+              FROM nodes 
+              WHERE id = ?
+              UNION ALL
+              SELECT n.id, n.parent_id, n.title, n.type, n.url, n.size, n.modified_date
+              FROM nodes n
+              INNER JOIN folder_tree ft ON n.parent_id = ft.id
+          )
+          SELECT id, title, url, size, modified_date
+          FROM folder_tree
+          WHERE type = 'File'
+          ORDER BY title ASC
+        `),
       };
     }
 
@@ -181,6 +196,31 @@ function executeSearchFTS(searchTerm, options, ftsTable, ftsType) {
 }
 
 /**
+ * Obtiene todos los archivos de una carpeta recursivamente en el worker
+ */
+function getAllFilesInFolder(folderId) {
+  if (!databases.catalog || !statements.catalog || !statements.catalog.getAllFilesRecursive) {
+    return { success: false, error: 'Base de datos de catálogo no inicializada' };
+  }
+
+  try {
+    const results = statements.catalog.getAllFilesRecursive.all(folderId);
+    return {
+      success: true,
+      data: results.map(file => ({
+        id: file.id,
+        title: file.title.replace(/\/$/, ''),
+        url: file.url,
+        size: file.size,
+        modified_date: file.modified_date,
+      })),
+    };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
+/**
  * Maneja mensajes del main thread
  */
 parentPort.on('message', async (message) => {
@@ -203,6 +243,10 @@ parentPort.on('message', async (message) => {
           message.ftsTable,
           message.ftsType
         );
+        break;
+
+      case 'getAllFilesInFolder':
+        result = getAllFilesInFolder(message.folderId);
         break;
 
       case 'ping':

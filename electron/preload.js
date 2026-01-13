@@ -12,6 +12,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 // El renderer solo puede escuchar estos eventos, no enviarlos
 const validEventChannels = [
   'download-progress',
+  'download-progress-batch',
   'history-cleaned',
   'downloads-restored',
   'error-notification',
@@ -39,6 +40,7 @@ const validInvokeChannels = [
   'get-download-stats',
   'get-queue-time-estimate',
   'clean-history',
+  'clear-history',
   // Lectura y escritura de archivos de configuración
   'read-config-file',
   'write-config-file',
@@ -183,6 +185,9 @@ const api = {
   // Limpia el historial de descargas eliminando registros más antiguos que los días especificados
   // daysOld: Número de días de antigüedad mínimo para considerar una descarga como histórica
   cleanHistory: daysOld => safeInvoke('clean-history', daysOld),
+
+  // Limpia todo el historial de descargas (sin importar la fecha)
+  clearHistory: () => safeInvoke('clear-history'),
 
   // Gestión de archivos de configuración JSON almacenados en el directorio de configuración
   // Estos archivos persisten preferencias del usuario entre sesiones

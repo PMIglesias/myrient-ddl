@@ -9,6 +9,7 @@ import { ref } from 'vue';
 // Estado global (singleton)
 const toasts = ref([]);
 let toastIdCounter = 0;
+const MAX_TOASTS = 6;
 
 /**
  * Composable de toasts
@@ -24,6 +25,12 @@ export function useToasts() {
    * @returns {number} ID del toast
    */
   const showToast = options => {
+    // Limitar el número de notificaciones en pantalla
+    if (toasts.value.length >= MAX_TOASTS) {
+      // Remover la notificación más antigua para hacer espacio
+      toasts.value.shift();
+    }
+
     const id = ++toastIdCounter;
     const toast = {
       id,

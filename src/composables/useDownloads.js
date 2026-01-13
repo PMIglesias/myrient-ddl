@@ -264,7 +264,7 @@ export function useDownloads() {
     // Selección
     toggleSelectDownload: selection.toggleSelectDownload,
     toggleSelectHistoryDownload: selection.toggleSelectHistoryDownload,
-    toggleSelectAllHistoryDownloads: allDownloads => {
+    toggleSelectAllHistoryDownloads: () => {
       selection.toggleSelectAllHistoryDownloads(computed.allDownloads.value);
     },
 

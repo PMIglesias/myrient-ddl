@@ -450,6 +450,17 @@ function registerHandlers(mainWindow) {
         return { success: true, queued: true, position };
       }
 
+      // NUEVO: Si no puede iniciar Y no puede encolar, significa que la cola está llena
+      if (!canStart && !shouldQueue) {
+        log.warn(`Solicitud rechazada: Cola llena (${stats.queuedInMemory} ítems)`);
+        return {
+          success: false,
+          error: 'La cola de descargas está llena (límite de 1,000).',
+          queueFull: true,
+          limit: config.downloads.maxQueueSize
+        };
+      }
+
       // SUPER MEGA HIPER IMPORTANTE : Primero agregar la descarga a la BD si no existe
       // Esto evita el error de FOREIGN KEY al crear chunks
       if (!queueDatabase.exists(validatedParams.id)) {
@@ -638,7 +649,9 @@ function registerHandlers(mainWindow) {
       }
 
       const validStates = ['cancelled', 'failed', 'awaiting', 'paused'];
-      if (!validStates.includes(dbDownload.state)) {
+      // Permitir reiniciar descargas en estado 'queued' si tienen un error (están esperando reintento automático)
+      const isQueuedWithError = dbDownload.state === 'queued' && dbDownload.lastError;
+      if (!validStates.includes(dbDownload.state) && !isQueuedWithError) {
         return {
           success: false,
           error: `No se puede reiniciar descarga en estado ${dbDownload.state}`,
@@ -950,6 +963,24 @@ function registerHandlers(mainWindow) {
   );
 
   ipcMain.handle(
+    'clear-history',
+    createHandler('clear-history', async () => {
+      const cleaned = queueDatabase.clearHistory();
+
+      // Notificar al frontend
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('history-cleaned', {
+          count: cleaned,
+          timestamp: Date.now(),
+          manual: true,
+        });
+      }
+
+      return { success: true, count: cleaned };
+    })
+  );
+
+  ipcMain.handle(
     'download-folder',
     createHandler('download-folder', async (event, params) => {
       const { downloadService, queueService } = getServices();
@@ -964,6 +995,12 @@ function registerHandlers(mainWindow) {
 
       const validatedParams = validation.data;
 
+      // CRÍTICO: Si la ruta de descarga es una cadena vacía, tratarla como null
+      // Esto permite que el manager pida la ubicación al usuario si no hay una preconfigurada
+      if (validatedParams.downloadPath === '') {
+        validatedParams.downloadPath = null;
+      }
+
       log.info(`=== SOLICITUD DE DESCARGA DE CARPETA ===`);
       log.info(`Folder ID: ${validatedParams.folderId}`);
       log.info(`Download Path: ${validatedParams.downloadPath || 'No especificado'}`);
@@ -972,7 +1009,7 @@ function registerHandlers(mainWindow) {
 
       try {
         // Obtener todos los archivos de la carpeta recursivamente
-        const filesResult = database.getAllFilesInFolder(validatedParams.folderId);
+        const filesResult = await database.getAllFilesInFolder(validatedParams.folderId);
 
         if (!filesResult.success) {
           return { success: false, error: filesResult.error || ERRORS.DOWNLOAD.GET_FILES_FAILED };
@@ -983,10 +1020,17 @@ function registerHandlers(mainWindow) {
         // Validar si la carpeta puede ser descargada usando DownloadService si está disponible
         if (downloadService) {
           const stats = downloadManager.getStats();
+          
+          // DINÁMICO: Si el usuario apretó el botón, permitimos que la carpeta entre
+          // ajustando los límites solo para esta validación.
           const canDownload = downloadService.canDownloadFolder(
             validatedParams,
             files.length,
-            stats
+            stats,
+            {
+              maxFilesPerFolder: Math.max(files.length, 1000),
+              maxQueueSize: Math.max(files.length + 1000, 1000)
+            }
           );
 
           if (!canDownload.canDownload) {
@@ -1015,18 +1059,22 @@ function registerHandlers(mainWindow) {
             ? folderInfo.data.title
             : `Carpeta ${validatedParams.folderId}`;
 
+        // OPTIMIZACIÓN: Crear un Set de IDs activos/en cola para búsquedas O(1)
+        const activeIdsSet = new Set([
+          ...downloadManager.activeDownloads.keys(),
+          ...downloadManager.chunkedDownloads.keys(),
+          ...downloadManager.downloadQueue.map(d => d.id)
+        ]);
+
         // Calcular estadísticas usando DownloadService si está disponible
         let folderStats = null;
         if (downloadService) {
-          const existingDownloads = Array.from(downloadManager.activeDownloads.keys())
-            .concat(Array.from(downloadManager.chunkedDownloads.keys()))
-            .concat(downloadManager.downloadQueue.map(d => d.id))
-            .map(id => ({ id }));
-
+          // Ya no pasamos existingDownloads como array para evitar O(N*M)
+          // El servicio puede manejarlo internamente o podemos pasarle el Set
           folderStats = downloadService.calculateFolderDownloadStats(
             validatedParams,
             files,
-            existingDownloads
+            Array.from(activeIdsSet).map(id => ({ id }))
           );
 
           log.info(`Estadísticas de carpeta:`, folderStats);
@@ -1039,71 +1087,44 @@ function registerHandlers(mainWindow) {
 
         // Primera pasada: preparar y validar todas las descargas
         for (const file of files) {
-          // Preparar parámetros de descarga usando DownloadService si está disponible
-          let downloadParams;
+          // Verificar si ya está en el Set de activos (O(1))
+          if (activeIdsSet.has(file.id)) {
+            skippedFiles.push(file);
+            continue;
+          }
 
+          // Preparar parámetros de descarga
+          let downloadParams;
           if (downloadService) {
             const prepared = downloadService.prepareFileDownloadParams(validatedParams, file);
-
             if (!prepared.success) {
-              errors.push({
-                fileId: file.id,
-                fileName: file.title,
-                error: prepared.error,
-              });
+              errors.push({ fileId: file.id, fileName: file.title, error: prepared.error });
               skippedFiles.push(file);
               continue;
             }
-
             downloadParams = prepared.params;
           } else {
-            // Fallback: preparar parámetros manualmente
             downloadParams = {
               id: file.id,
               title: file.title,
               downloadPath: validatedParams.downloadPath,
-              preserveStructure: validatedParams.preserveStructure !== false, // Por defecto true
+              preserveStructure: validatedParams.preserveStructure !== false,
               forceOverwrite: validatedParams.forceOverwrite || false,
             };
           }
 
-          // CRÍTICO: Sanitizar inputs
+          // Sanitizar
           downloadParams.title = sanitizeFileName(downloadParams.title);
           if (downloadParams.downloadPath) {
             const pathValidation = validateAndSanitizeDownloadPath(downloadParams.downloadPath);
             if (!pathValidation.valid) {
-              errors.push({
-                fileId: file.id,
-                fileName: file.title,
-                error: pathValidation.error,
-              });
+              errors.push({ fileId: file.id, fileName: file.title, error: pathValidation.error });
               skippedFiles.push(file);
               continue;
             }
             downloadParams.downloadPath = pathValidation.path;
           }
 
-          // Verificar si ya está en descarga o es duplicado
-          if (downloadManager.isDownloadActive(downloadParams.id)) {
-            skippedFiles.push(file);
-            continue;
-          }
-
-          // Verificar duplicados usando DownloadService si está disponible
-          if (downloadService) {
-            const existingDownloads = Array.from(downloadManager.activeDownloads.keys())
-              .concat(Array.from(downloadManager.chunkedDownloads.keys()))
-              .concat(downloadManager.downloadQueue.map(d => d.id))
-              .map(id => ({ id }));
-
-            const duplicateCheck = downloadService.isDuplicate(downloadParams, existingDownloads);
-            if (duplicateCheck.isDuplicate) {
-              skippedFiles.push(file);
-              continue;
-            }
-          }
-
-          // Agregar a lista de descargas a insertar
           downloadsToAdd.push(downloadParams);
         }
 
@@ -1111,25 +1132,20 @@ function registerHandlers(mainWindow) {
         let addedCount = 0;
         if (downloadsToAdd.length > 0) {
           try {
-            // Usar método de transacción masiva si está disponible, sino insertar una por una
             const now = Date.now();
             let nextPosition = queueDatabase.statements.getNextQueuePosition.get().next;
 
             const transaction = queueDatabase.db.transaction((downloads) => {
               const insertStmt = queueDatabase.statements.insertDownload;
-
               for (let i = 0; i < downloads.length; i++) {
                 const download = downloads[i];
-                
-                // Verificar que no existe antes de insertar
-                if (queueDatabase.exists(download.id)) {
-                  continue;
-                }
+                // El Set ya filtró la mayoría, pero SQLite previene duplicados por PK
+                if (queueDatabase.exists(download.id)) continue;
 
                 insertStmt.run({
                   id: download.id,
                   title: download.title,
-                  url: null,
+                  url: download.url || null,
                   savePath: null,
                   downloadPath: download.downloadPath || null,
                   preserveStructure: download.preserveStructure ? 1 : 0,
@@ -1146,28 +1162,29 @@ function registerHandlers(mainWindow) {
               }
             });
 
-            // Ejecutar transacción
             transaction(downloadsToAdd);
             addedCount = downloadsToAdd.length;
             log.info(`Transacción completada: ${addedCount} descargas insertadas en batch`);
 
-            // Agregar a cola en memoria y notificar
-            downloadsToAdd.forEach((download, index) => {
-              const position = downloadManager.addToQueue(download);
-              if (position > 0) {
-                // Notificar individualmente (payload pequeño)
-                sendDownloadProgress(mainWindow, {
-                  id: download.id,
-                  state: 'queued',
-                  title: download.title,
-                  progress: 0,
-                }, { includeMetadata: true });
-              }
-            });
+            // Notificar en bloque (Batch) para evitar saturación IPC
+            // Usar addManyToQueue (O(N log N) total en vez de O(N^2 log N))
+            downloadManager.addManyToQueue(downloadsToAdd);
+
+            const queuedNotifications = downloadsToAdd.map(download => ({
+              id: download.id,
+              state: 'queued',
+              title: download.title,
+              progress: 0,
+            }));
+
+            if (queuedNotifications.length > 0) {
+              const { sendBatchDownloadProgress } = require('./utils/ipcHelpers');
+              sendBatchDownloadProgress(mainWindow, queuedNotifications);
+              log.info(`Notificadas ${queuedNotifications.length} descargas en cola vía Batch IPC`);
+            }
           } catch (error) {
             log.error('Error en transacción de descargas masivas:', error);
-            // Fallback: insertar una por una si la transacción falla
-            log.warn('Usando fallback: insertando descargas una por una');
+            // Fallback (solo si falla la transacción)
             for (const download of downloadsToAdd) {
               try {
                 const position = downloadManager.addToQueueWithPersist(download);
@@ -1189,8 +1206,6 @@ function registerHandlers(mainWindow) {
         }
 
         const skippedCount = skippedFiles.length;
-
-        // Procesar la cola
         downloadManager.processQueue();
 
         log.info(
@@ -1320,7 +1335,16 @@ function registerHandlers(mainWindow) {
         return { success: false };
       }
 
-      return { success: true, path: result.filePaths[0] };
+      const selectedPath = result.filePaths[0];
+
+      // REFUERZO FASE 4: Validar que la carpeta seleccionada esté en una ubicación permitida
+      const pathValidation = validateAndSanitizeDownloadPath(selectedPath);
+      if (!pathValidation.valid) {
+        log.warn(`Selección de carpeta rechazada por seguridad: ${selectedPath}`);
+        return { success: false, error: pathValidation.error };
+      }
+
+      return { success: true, path: pathValidation.path };
     })
   );
 
@@ -1333,7 +1357,14 @@ function registerHandlers(mainWindow) {
       }
 
       try {
-        const resolvedPath = path.resolve(filePath);
+        // REFUERZO FASE 4: Validar y sanitizar la ruta antes de interactuar con el shell
+        const pathValidation = validateAndSanitizeDownloadPath(filePath);
+        if (!pathValidation.valid) {
+          log.warn(`Bloqueado intento de abrir ruta no segura: ${filePath}`);
+          return { success: false, error: pathValidation.error };
+        }
+        
+        const resolvedPath = pathValidation.path;
         
         // Verificar si la ruta existe
         if (!fs.existsSync(resolvedPath)) {

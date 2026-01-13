@@ -44,6 +44,10 @@ configureLogger({
   isDev: !app.isPackaged,
 });
 
+// Configurar el logger con la referencia a la ventana principal para permitir el envío de logs vía IPC
+// Pasamos la función getter para que el logger siempre tenga acceso a la instancia actual de la ventana
+setMainWindowGetter(getMainWindow);
+
 const log = logger.child('Main');
 
 /**
@@ -418,7 +422,13 @@ app.on('before-quit', () => {
 // Función de limpieza que se ejecuta antes de cerrar la aplicación
 // Guarda el estado actual de descargas, cierra conexiones, y libera recursos
 function cleanup() {
-  log.separator('LIMPIANDO RECURSOS');
+  log.separator('LIMPIANDO RECURSOS (SAFE SHUTDOWN)');
+
+  // FASE 1 REFUERZO: Detener inmediatamente el inicio de nuevas descargas
+  // Esto evita race conditions donde una descarga empieza mientras cerramos la DB
+  if (downloadManager && typeof downloadManager.pauseQueue === 'function') {
+    downloadManager.pauseQueue();
+  }
 
   // Guardar el estado actual de todas las descargas activas en la base de datos SQLite
   // IMPORTANTE: Solo cambiar el estado de descargas que realmente estaban descargando

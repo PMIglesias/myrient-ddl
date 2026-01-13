@@ -32,6 +32,8 @@ import {
   triggerRef,
 } from './useDownloadState';
 import * as api from '../../services/api';
+import { useToasts } from '../useToasts';
+import { DOWNLOAD_ERRORS } from '../../constants/errors';
 
 /**
  * Composable para gestión de cola de descargas
@@ -60,6 +62,12 @@ export function useDownloadQueue(settings = null) {
   const downloadPath = settings?.downloadPath || { value: '' };
   const preserveStructure = settings?.preserveStructure || { value: true };
   const maxParallelDownloads = settings?.maxParallelDownloads || { value: 3 };
+
+  const { showToast } = useToasts();
+  
+  // Rastrear última vez que se mostró el aviso de cola llena para evitar spam
+  let lastQueueFullToastTime = 0;
+  const QUEUE_FULL_TOAST_THROTTLE = 10000; // 10 segundos
 
   /**
    * Procesa la cola de descargas de forma segura con mutex
@@ -243,6 +251,24 @@ export function useDownloadQueue(settings = null) {
             if (result.error && result.error.includes('ya en proceso')) {
               console.debug(`[Queue] Descarga "${item.title}" ya está en proceso, omitiendo`);
               item.status = 'queued';
+            } else if (result.queueFull) {
+              // NUEVO: Manejar cola llena con notificación al usuario
+              console.warn(`[Queue] Cola llena detectada al intentar descargar "${item.title}"`);
+              item.status = 'queued'; // Mantener en cola local para reintentar después
+
+              const now = Date.now();
+              if (now - lastQueueFullToastTime > QUEUE_FULL_TOAST_THROTTLE) {
+                showToast({
+                  title: DOWNLOAD_ERRORS.QUEUE_FULL,
+                  message: 'La cola está a tope. Esperando a que se vacíe lo suficiente para volver a agregar archivos.',
+                  type: 'warning',
+                  duration: 6000,
+                });
+                lastQueueFullToastTime = now;
+              }
+              
+              // Si la cola está llena, no tiene sentido seguir intentando con el resto de descargas en este ciclo
+              break;
             } else {
               console.warn(`[Queue] Error iniciando "${item.title}":`, result.error);
               item.status = 'queued';

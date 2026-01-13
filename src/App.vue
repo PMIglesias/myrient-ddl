@@ -240,6 +240,7 @@
       @select-folder="selectDownloadFolder"
       @clear-favorites="clearFavorites"
       @clean-history="handleCleanHistory"
+      @clear-history="handleClearHistory"
       @set-primary-color="setPrimaryColor"
     />
 
@@ -304,7 +305,7 @@ import { useErrorHandling } from './composables/useErrorHandling';
 import { registerGlobalToastHandler } from './utils/errorHandler';
 
 // API
-import { getDbUpdateDate, cleanHistory } from './services/api';
+import { getDbUpdateDate, cleanHistory, clearHistory } from './services/api';
 
 // Utils
 import logger from './utils/logger';
@@ -648,6 +649,37 @@ const handleCleanHistory = async daysOld => {
   }
 };
 
+const handleClearHistory = async () => {
+  try {
+    const result = await clearHistory();
+    if (result.success) {
+      showToast({
+        title: SUCCESS_MESSAGES.HISTORY_CLEANED,
+        message: formatHistoryCleaned(result.count),
+        type: 'success',
+        duration: 5000,
+      });
+      cleanupStats.value.lastDbCleanup = Date.now();
+    } else {
+      showToast({
+        title: HISTORY_ERRORS.CLEAN_FAILED,
+        message: result.error || GENERAL_ERRORS.UNKNOWN,
+        type: 'error',
+        duration: 5000,
+      });
+    }
+  } catch (error) {
+    const appLogger = logger.child('App');
+    appLogger.error('Error limpiando todo el historial:', error);
+    showToast({
+      title: HISTORY_ERRORS.CLEAN_FAILED,
+      message: error.message || GENERAL_ERRORS.UNKNOWN,
+      type: 'error',
+      duration: 5000,
+    });
+  }
+};
+
 // =====================
 // WATCHERS
 // =====================
@@ -692,6 +724,18 @@ const handleMemoryCleaned = event => {
   }
 };
 
+const handleDownloadCompleted = event => {
+  const { title } = event.detail;
+  if (showNotifications.value) {
+    showToast({
+      title: SUCCESS_MESSAGES.DOWNLOAD_COMPLETED,
+      message: title,
+      type: 'success',
+      duration: 5000,
+    });
+  }
+};
+
 // =====================
 // LIFECYCLE
 // =====================
@@ -711,12 +755,14 @@ onMounted(async () => {
   // Escuchar eventos de limpieza de historial
   window.addEventListener('history-cleaned', handleHistoryCleaned);
   window.addEventListener('memory-cleaned', handleMemoryCleaned);
+  window.addEventListener('download-completed', handleDownloadCompleted);
 });
 
 onUnmounted(() => {
   // Limpiar event listeners
   window.removeEventListener('history-cleaned', handleHistoryCleaned);
   window.removeEventListener('memory-cleaned', handleMemoryCleaned);
+  window.removeEventListener('download-completed', handleDownloadCompleted);
 
   // Limpiar manejo de errores
   cleanupErrorHandling();

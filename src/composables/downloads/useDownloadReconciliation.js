@@ -115,8 +115,171 @@ export function useDownloadReconciliation(
   let reconciliationInterval = null;
   let rotationInterval = null;
   let removeProgressListener = null;
+  let removeBatchProgressListener = null;
   let removeHistoryListener = null;
   let removeRestoredListener = null;
+
+  const uiUpdateQueue = new Map();
+  let rafId = null;
+
+  const processUIUpdateQueue = () => {
+    if (uiUpdateQueue.size === 0) {
+      rafId = null;
+      return;
+    }
+
+    const updates = Array.from(uiUpdateQueue.values());
+    uiUpdateQueue.clear();
+    rafId = null;
+
+    const newDownloads = { ...downloads.value };
+    let hasChanges = false;
+
+    updates.forEach(info => {
+      const updatedDl = _mapProgressToDownload(newDownloads[info.id], info);
+      if (updatedDl) {
+        newDownloads[info.id] = updatedDl;
+        hasChanges = true;
+      }
+    });
+
+    if (hasChanges) {
+      downloads.value = newDownloads;
+    }
+  };
+
+  const _mapProgressToDownload = (currentDl, info) => {
+    if (!info) return null;
+
+    let dl = currentDl ? { ...currentDl } : {
+      id: info.id,
+      title: info.title || `Descarga ${info.id}`,
+      addedAt: Date.now(),
+    };
+
+    if (info.title) dl.title = info.title;
+
+    switch (info.state) {
+      case 'starting':
+        dl.state = 'starting';
+        dl.percent = 0;
+        delete dl.error;
+        if (info.chunked || info.numChunks) {
+          dl.chunked = true;
+          dl.totalChunks = info.numChunks || info.totalChunks || 0;
+          dl.activeChunks = 0;
+          dl.completedChunks = 0;
+          if (!dl.chunkProgress) dl.chunkProgress = [];
+        }
+        break;
+
+      case 'progressing':
+        dl.state = 'progressing';
+        dl.percent = info.percent ?? dl.percent ?? 0;
+        delete dl.error;
+        
+        if (info.chunked) {
+          dl.chunked = true;
+          if (info.chunkProgress !== undefined && info.chunkProgress !== null) {
+            dl.chunkProgress = Array.isArray(info.chunkProgress) ? info.chunkProgress : [];
+          }
+          if (info.activeChunks !== undefined) dl.activeChunks = info.activeChunks;
+          if (info.completedChunks !== undefined) dl.completedChunks = info.completedChunks;
+          if (info.totalChunks !== undefined) dl.totalChunks = info.totalChunks;
+        }
+
+        if (info.remainingTime !== undefined && isFinite(info.remainingTime)) {
+          dl.remainingTime = info.remainingTime;
+        }
+
+        speedStats.value.set(info.id, {
+          speed: info.speed || 0,
+          totalBytes: info.totalBytes || 0,
+          downloadedBytes: info.downloadedBytes || 0,
+          remainingTime: info.remainingTime || 0,
+        });
+        break;
+
+      case 'merging':
+        dl.state = 'merging';
+        dl.percent = info.percent || info.mergeProgress || 0;
+        dl.merging = true;
+        dl.mergeProgress = info.mergeProgress || info.percent || 0;
+        dl.mergeSpeed = info.mergeSpeed || info.speed || 0;
+        dl.currentChunk = info.currentChunk;
+        dl.bytesProcessed = info.bytesProcessed;
+        break;
+
+      case 'completed':
+        // Detectar si es un cambio de estado (no una descarga que ya estaba completada)
+        const wasCompleted = currentDl?.state === 'completed';
+        dl.state = 'completed';
+        dl.percent = 1;
+        dl.completedAt = Date.now();
+        dl.savePath = info.savePath;
+        // Preservar mergeProgress al 100% si venía de un merge para que la UI lo muestre
+        // Se eliminará después de un breve delay para limpiar el estado
+        if (dl.merging || dl.mergeProgress !== undefined) {
+          dl.mergeProgress = 1.0; // Asegurar que esté al 100%
+        }
+        delete dl.merging;
+        speedStats.value.delete(info.id);
+        downloadQueue.value = downloadQueue.value.filter(d => d.id !== info.id);
+        
+        // Emitir evento solo si acaba de completarse (no estaba completada antes)
+        if (!wasCompleted && getShowNotifications()) {
+          if (typeof window !== 'undefined' && window.dispatchEvent) {
+            window.dispatchEvent(
+              new CustomEvent('download-completed', {
+                detail: {
+                  id: info.id,
+                  title: info.title || dl.title || `Descarga ${info.id}`,
+                  savePath: info.savePath,
+                },
+              })
+            );
+          }
+        }
+        break;
+
+      case 'interrupted':
+      case 'cancelled':
+        dl.state = info.state;
+        dl.error = info.error || 'Descarga interrumpida';
+        speedStats.value.delete(info.id);
+        downloadQueue.value = downloadQueue.value.filter(d => d.id !== info.id);
+        break;
+
+      case 'paused':
+        dl.state = 'paused';
+        dl.percent = info.percent || dl.percent;
+        speedStats.value.delete(info.id);
+        downloadQueue.value = downloadQueue.value.filter(d => d.id !== info.id);
+        break;
+
+      case 'awaiting-confirmation':
+        dl.state = 'waiting';
+        dl.savePath = info.savePath;
+        if (!pendingConfirmations.value.some(c => c.id === info.id)) {
+          pendingConfirmations.value.push({
+            id: info.id,
+            title: info.title,
+            savePath: info.savePath,
+            existingSize: info.fileCheck?.existingSize,
+            expectedSize: info.fileCheck?.expectedSize,
+            showNotification: getShowNotifications(),
+          });
+        }
+        break;
+
+      case 'queued':
+        dl.state = 'queued';
+        if (info.position) dl.queuePosition = info.position;
+        break;
+    }
+
+    return dl;
+  };
 
   /**
    * Calcula un hash simple del estado actual para detectar cambios
@@ -147,260 +310,21 @@ export function useDownloadReconciliation(
 
     startingDownloads.delete(info.id);
 
-    let dl = downloads.value[info.id] || {
-      id: info.id,
-      title: info.title || `Descarga ${info.id}`,
-      addedAt: Date.now(),
-    };
+    // Encolar actualización para el siguiente frame
+    uiUpdateQueue.set(info.id, info);
 
-    dl.id = info.id;
-    if (info.title) dl.title = info.title;
-
-    switch (info.state) {
-      case 'starting':
-        dl.state = 'starting';
-        dl.percent = 0;
-        delete dl.error;
-        // Si es descarga chunked, guardar información inicial de chunks
-        if (info.chunked || info.numChunks) {
-          dl.chunked = true;
-          dl.totalChunks = info.numChunks || info.totalChunks || 0;
-          dl.activeChunks = 0;
-          dl.completedChunks = 0;
-          // Inicializar chunkProgress como array vacío si no viene
-          if (!dl.chunkProgress) {
-            dl.chunkProgress = [];
-          }
-        }
-        // Resetear throttling para nuevas descargas
-        lastProgressUpdate.delete(info.id);
-        lastProgressValue.delete(info.id);
-        break;
-
-      case 'progressing':
-        // CRÍTICO: Throttling y filtrado de cambios insignificantes
-        const now = Date.now();
-        const lastUpdate = lastProgressUpdate.get(info.id) || 0;
-        const lastProgress = lastProgressValue.get(info.id) ?? dl.percent ?? 0;
-        const newProgress = info.percent ?? 0;
-
-        // Verificar throttling temporal
-        if (now - lastUpdate < PROGRESS_THROTTLE_MS) {
-          // Actualización muy reciente, ignorar si no es un cambio de estado importante
-          if (info.state === 'progressing' && Math.abs(newProgress - lastProgress) < PROGRESS_CHANGE_THRESHOLD) {
-            return; // Cambio insignificante y muy reciente, ignorar
-          }
-        }
-
-        // Verificar si el cambio es significativo
-        const progressChange = Math.abs(newProgress - lastProgress);
-        if (progressChange < PROGRESS_CHANGE_THRESHOLD && now - lastUpdate < PROGRESS_THROTTLE_MS * 2) {
-          // Cambio insignificante, solo actualizar si ha pasado suficiente tiempo
-          return;
-        }
-
-        // Actualizar timestamps de throttling
-        lastProgressUpdate.set(info.id, now);
-        lastProgressValue.set(info.id, newProgress);
-
-        dl.state = 'progressing';
-        dl.percent = newProgress;
-        delete dl.error;
-        delete dl.merging;
-        delete dl.mergeProgress;
-        delete dl.mergeSpeed;
-
-        // Guardar información granular de chunks si está disponible
-        // IMPORTANTE: Actualizar chunks incluso si chunked cambió, para mantener datos
-        if (info.chunked) {
-          dl.chunked = true;
-          // Solo actualizar chunkProgress si viene en el evento (no usar || [] para evitar perder datos)
-          if (info.chunkProgress !== undefined && info.chunkProgress !== null) {
-            dl.chunkProgress = Array.isArray(info.chunkProgress) ? info.chunkProgress : [];
-          } else if (dl.chunkProgress === undefined) {
-            // Solo establecer array vacío si no existe previamente
-            dl.chunkProgress = [];
-          }
-          // Actualizar contadores si vienen
-          if (info.activeChunks !== undefined) dl.activeChunks = info.activeChunks;
-          if (info.completedChunks !== undefined) dl.completedChunks = info.completedChunks;
-          if (info.totalChunks !== undefined) dl.totalChunks = info.totalChunks;
-        } else {
-          // Si no es chunked, limpiar solo si realmente no hay información de chunks
-          // Pero mantener chunkProgress si existe (puede ser útil para mostrar estado final)
-          if (
-            !info.chunkProgress ||
-            (Array.isArray(info.chunkProgress) && info.chunkProgress.length === 0)
-          ) {
-            delete dl.chunked;
-            // No eliminar chunkProgress inmediatamente, puede ser útil para mostrar estado
-            // delete dl.chunkProgress;
-            delete dl.activeChunks;
-            delete dl.completedChunks;
-            delete dl.totalChunks;
-          }
-        }
-
-        // Guardar remainingTime en el objeto download también
-        // Solo actualizar si viene un valor válido (no usar || 0 porque 0 es válido)
-        if (
-          info.remainingTime !== undefined &&
-          info.remainingTime !== null &&
-          isFinite(info.remainingTime)
-        ) {
-          dl.remainingTime = info.remainingTime;
-        } else if (dl.remainingTime === undefined) {
-          // Solo establecer 0 si no existe previamente
-          dl.remainingTime = 0;
-        }
-
-        speedStats.value.set(info.id, {
-          speed: info.speed || 0,
-          totalBytes: info.totalBytes || 0,
-          downloadedBytes: info.downloadedBytes || 0,
-          remainingTime: info.remainingTime || 0,
-        });
-        break;
-
-      case 'merging':
-        dl.state = 'merging';
-        dl.percent = info.percent || info.mergeProgress || 0;
-        delete dl.error;
-        dl.merging = true;
-
-        // Guardar información de merge
-        dl.mergeProgress = info.mergeProgress || info.percent || 0;
-        dl.mergeSpeed = info.mergeSpeed || info.speed || 0; // MB/s
-        dl.currentChunk = info.currentChunk;
-        dl.bytesProcessed = info.bytesProcessed;
-
-        // Mantener información de chunks si está disponible
-        if (info.chunked || dl.chunked) {
-          dl.chunked = true;
-          dl.chunkProgress = info.chunkProgress || dl.chunkProgress || [];
-          dl.totalChunks = info.totalChunks || dl.totalChunks || 0;
-        }
-
-        speedStats.value.set(info.id, {
-          speed: info.speed || info.mergeSpeed || 0,
-          totalBytes: info.totalBytes || 0,
-          downloadedBytes: info.bytesProcessed || info.downloadedBytes || 0,
-          remainingTime: 0, // No hay tiempo restante en merge
-        });
-        break;
-
-      case 'completed':
-        dl.state = 'completed';
-        dl.percent = 1; // Asegurar 100% al completar
-        dl.completedAt = Date.now();
-        dl.savePath = info.savePath;
-
-        // Limpiar información de merge si estaba fusionando
-        delete dl.merging;
-        delete dl.mergeProgress;
-        delete dl.mergeSpeed;
-        delete dl.currentChunk;
-        delete dl.bytesProcessed;
-
-        // Limpiar throttling para esta descarga
-        lastProgressUpdate.delete(info.id);
-        lastProgressValue.delete(info.id);
-
-        // Mantener información de chunks para referencia (opcional)
-        // Se puede limpiar si no se necesita después de completar
-        if (dl.chunked) {
-          // Opcionalmente limpiar información de chunks después de completar
-          // delete dl.chunkProgress;
-          // delete dl.activeChunks;
-          // delete dl.completedChunks;
-          // delete dl.totalChunks;
-        }
-
-        speedStats.value.delete(info.id);
-        downloadQueue.value = downloadQueue.value.filter(d => d.id !== info.id);
-        if (saveDownloadHistoryFn) saveDownloadHistoryFn();
-        timeoutManager.safeSetTimeout(() => {
-          if (processDownloadQueueFn) processDownloadQueueFn();
-        }, 100);
-        break;
-
-      case 'interrupted':
-      case 'cancelled':
-        dl.state = info.state;
-        dl.error = info.error || 'Descarga interrumpida';
-        
-        // Limpiar throttling para esta descarga
-        lastProgressUpdate.delete(info.id);
-        lastProgressValue.delete(info.id);
-        
-        speedStats.value.delete(info.id);
-        downloadQueue.value = downloadQueue.value.filter(d => d.id !== info.id);
-        if (saveDownloadHistoryFn) saveDownloadHistoryFn();
-        timeoutManager.safeSetTimeout(() => {
-          if (processDownloadQueueFn) processDownloadQueueFn();
-        }, 100);
-        break;
-
-      case 'paused':
-        dl.state = 'paused';
-        dl.percent = info.percent || dl.percent;
-        speedStats.value.delete(info.id);
-        downloadQueue.value = downloadQueue.value.filter(d => d.id !== info.id);
-        break;
-
-      case 'awaiting-confirmation':
-        dl.state = 'waiting';
-        dl.savePath = info.savePath;
-        if (!pendingConfirmations.value.some(c => c.id === info.id)) {
-          pendingConfirmations.value.push({
-            id: info.id,
-            title: info.title,
-            savePath: info.savePath,
-            existingSize: info.fileCheck?.existingSize,
-            expectedSize: info.fileCheck?.expectedSize,
-            showNotification: getShowNotifications(),
-          });
-        }
-        break;
-
-      case 'queued':
-        dl.state = 'queued';
-        if (info.position) dl.queuePosition = info.position;
-        // Resetear throttling para descargas en cola
-        lastProgressUpdate.delete(info.id);
-        lastProgressValue.delete(info.id);
-        break;
+    // Si no hay un frame programado, solicitar uno
+    if (!rafId) {
+      rafId = requestAnimationFrame(processUIUpdateQueue);
     }
 
-    // CRÍTICO: Optimización de actualizaciones para reducir re-renders innecesarios
-    // Con shallowRef, necesitamos crear un nuevo objeto solo cuando hay cambios significativos
-    const currentDownload = downloads.value[info.id];
-    const hasSignificantChange = 
-      !currentDownload ||
-      currentDownload.state !== dl.state ||
-      (info.state === 'progressing' && 
-       currentDownload.percent !== undefined &&
-       Math.abs((currentDownload.percent || 0) - (dl.percent || 0)) >= PROGRESS_CHANGE_THRESHOLD) ||
-      // Cambios de estado siempre son significativos
-      ['starting', 'merging', 'completed', 'interrupted', 'cancelled', 'paused', 'queued', 'awaiting-confirmation'].includes(info.state);
-
-    // ACTUALIZACIÓN DE ESTADO REACTIVO
-    // Como downloads es un shallowRef, necesitamos notificar a Vue de los cambios internos
-    // Si hay un cambio significativo (como estado), reemplazamos el objeto para asegurar que los hijos reaccionen
-    if (hasSignificantChange) {
-      downloads.value = {
-        ...downloads.value,
-        [info.id]: dl
-      };
-    } else {
-      // Para actualizaciones menores (solo progreso), triggerRef es suficiente y más eficiente
-      downloads.value[info.id] = dl;
-      triggerRef(downloads);
-    }
-
-    // Limitar historial en memoria después de actualizar
-    // Solo si la descarga se completó o falló (para no hacerlo en cada actualización de progreso)
+    // Lógica secundaria (fuera de la UI crítica)
     if (['completed', 'interrupted', 'cancelled'].includes(info.state)) {
+      if (saveDownloadHistoryFn) saveDownloadHistoryFn();
+      timeoutManager.safeSetTimeout(() => {
+        if (processDownloadQueueFn) processDownloadQueueFn();
+      }, 100);
+      
       if (limitHistoryInMemoryFn && getCurrentLimitsFn) {
         limitHistoryInMemoryFn(getCurrentLimitsFn());
       }
@@ -631,8 +555,15 @@ export function useDownloadReconciliation(
       }
     }, reconcileIntervalMs);
 
-    // Escuchar eventos de progreso
+    // Escuchar eventos de progreso individual
     removeProgressListener = api.onDownloadProgress(handleProgressEvent);
+
+    // NUEVO FASE 2: Escuchar eventos de progreso por lotes (Batch)
+    removeBatchProgressListener = api.onDownloadProgressBatch(payload => {
+      if (payload && payload.downloads && Array.isArray(payload.downloads)) {
+        payload.downloads.forEach(info => handleProgressEvent(info));
+      }
+    });
 
     // Escuchar eventos de limpieza de historial desde el backend
     removeHistoryListener = api.onHistoryCleaned(data => {
@@ -678,6 +609,13 @@ export function useDownloadReconciliation(
       reconciliationInterval = null;
     }
 
+    // NUEVO FASE 3: Limpiar requestAnimationFrame
+    if (rafId) {
+      cancelAnimationFrame(rafId);
+      rafId = null;
+    }
+    uiUpdateQueue.clear();
+
     // CRÍTICO: Limpiar todos los listeners IPC con manejo de errores
     try {
       if (removeProgressListener && typeof removeProgressListener === 'function') {
@@ -687,6 +625,17 @@ export function useDownloadReconciliation(
       }
     } catch (error) {
       log.error('[Reconcile] Error limpiando progress listener:', error);
+    }
+
+    // NUEVO FASE 2: Limpiar batch listener
+    try {
+      if (removeBatchProgressListener && typeof removeBatchProgressListener === 'function') {
+        removeBatchProgressListener();
+        removeBatchProgressListener = null;
+        log.debug('[Reconcile] Batch progress listener limpiado');
+      }
+    } catch (error) {
+      log.error('[Reconcile] Error limpiando batch progress listener:', error);
     }
 
     try {

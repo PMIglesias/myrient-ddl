@@ -77,6 +77,7 @@
         maxHeight: '600px',
         overflowY: 'auto',
         overflowX: 'auto',
+        contain: 'paint'
       }"
       @scroll="handleScroll"
     >
@@ -134,6 +135,16 @@
             :class="'download-row-' + download.queueStatus"
             role="row"
             tabindex="0"
+            v-memo="[
+              download.state, 
+              download.percent, 
+              download.chunked, 
+              download.activeChunks,
+              download.completedChunks,
+              download.merging,
+              download.queuePosition,
+              selectedHistoryDownloads.has(download.id)
+            ]"
           >
             <td
               class="checkbox-col"

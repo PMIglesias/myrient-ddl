@@ -26,6 +26,7 @@ function setupBackendLogListener() {
   try {
     const api = window.api;
     if (api && api.on && !backendLogUnsubscribe) {
+      console.log('[Logger] Configurando listener de logs del backend...');
       backendLogUnsubscribe = api.on('backend-log', logEntry => {
         // Agregar el log del backend al almacenamiento
         addToMemory(logEntry);

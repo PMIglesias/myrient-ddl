@@ -316,6 +316,7 @@ class QueueDatabase {
       this.db.pragma('cache_size = -64000'); // 64MB de caché
       this.db.pragma('temp_store = MEMORY'); // Temporales en memoria
       this.db.pragma('foreign_keys = ON'); // Integridad referencial
+      this.db.pragma('auto_vacuum = INCREMENTAL'); // Optimización de espacio al borrar historial
       
       // CRÍTICO: Configurar checkpoint automático del WAL
       // wal_autocheckpoint = N significa checkpoint automático cada N páginas (default: 1000)
@@ -1792,13 +1793,15 @@ class QueueDatabase {
     }
 
     // Solo reiniciar si está cancelada, fallida, awaiting o pausada
+    // También permitir reiniciar descargas en estado 'queued' si tienen un error (están esperando reintento automático)
     const validStates = [
       DownloadState.CANCELLED,
       DownloadState.FAILED,
       DownloadState.AWAITING,
       DownloadState.PAUSED,
     ];
-    if (!validStates.includes(download.state)) {
+    const isQueuedWithError = download.state === DownloadState.QUEUED && download.lastError;
+    if (!validStates.includes(download.state) && !isQueuedWithError) {
       log.warn(`No se puede reiniciar descarga en estado ${download.state}`);
       return false;
     }

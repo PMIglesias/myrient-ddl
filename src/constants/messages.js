@@ -14,6 +14,7 @@ export const SUCCESS_MESSAGES = {
   HISTORY_CLEANED: 'Historial limpiado',
   MEMORY_OPTIMIZED: 'Memoria optimizada',
   LOGS_EXPORTED: 'Logs exportados exitosamente',
+  DOWNLOAD_COMPLETED: 'Descarga completada',
 };
 
 // =====================

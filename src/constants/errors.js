@@ -58,6 +58,7 @@ export const DOWNLOAD_ERRORS = {
   CONFIRM_OVERWRITE_FAILED: 'Error confirmando sobrescritura',
   DELETE_FAILED: 'Error eliminando descarga',
   GET_FILES_FAILED: 'Error al obtener archivos de la carpeta',
+  QUEUE_FULL: 'La cola de descargas está llena',
 };
 
 // =====================

@@ -207,7 +207,9 @@ export function useDownloadComputed() {
 
         // Si la descarga está activa o acaba de cambiar, devolver un NUEVO objeto (shallow copy)
         // Esto garantiza que el Virtual DOM detecte cambios en .percent, .speed, etc.
-        const isActive = current.state === 'progressing' || current.state === 'starting' || current.merging;
+        // IMPORTANTE: Incluir también descargas completadas que aún tienen mergeProgress para mostrar el 100%
+        const isActive = current.state === 'progressing' || current.state === 'starting' || current.merging || 
+                        (current.state === 'completed' && current.mergeProgress !== undefined);
         
         if (isActive) {
           return {
