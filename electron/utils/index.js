@@ -28,6 +28,7 @@ const {
 
 const fileHelpers = require('./fileHelpers');
 const validation = require('./validation');
+const BandwidthManager = require('./bandwidthManager');
 
 // Intentar cargar schemas de validación de Zod si están disponibles
 // Los schemas son opcionales y se pueden usar para validación más robusta cuando están disponibles
@@ -59,4 +60,7 @@ module.exports = {
 
   // Schemas de Zod para validación avanzada (null si no están disponibles)
   schemas,
+
+  // BandwidthManager para control de ancho de banda
+  BandwidthManager,
 };

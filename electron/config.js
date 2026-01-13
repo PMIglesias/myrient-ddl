@@ -144,6 +144,33 @@ module.exports = {
     // 1.25 = aumentar a 125% del tamaño actual (aumento del 25%)
     bufferIncreaseFactor: 1.25,
 
+    // Configuración de Bandwidth Shaping para equilibrar velocidades entre descargas
+    // Distribuye el ancho de banda disponible usando porcentajes predefinidos (40%, 30%, 30%)
+    bandwidth: {
+      // Habilitar o deshabilitar el bandwidth shaping
+      // Si está deshabilitado, las descargas usarán todo el ancho de banda disponible
+      enabled: true,
+
+      // Ancho de banda máximo en bytes por segundo (0 = auto-detección)
+      // Si se establece 0 y autoDetect está habilitado, se medirá automáticamente
+      // Si se establece un valor, se usará ese límite fijo
+      maxBandwidthBytesPerSecond: 0, // 0 = auto-detección por defecto
+
+      // Habilitar auto-detección de ancho de banda
+      // Mide la velocidad real de las descargas para calcular el ancho de banda total disponible
+      autoDetect: true,
+
+      // Porcentajes de distribución para las primeras 3 descargas
+      // Primera descarga: 40%, Segunda: 30%, Tercera: 30%
+      // Si hay más de 3 descargas, el resto se distribuye equitativamente
+      distributionPercentages: [40, 30, 30],
+
+      // Intervalo de actualización de quotas en milisegundos
+      // Valores más bajos = control más preciso pero mayor overhead de CPU
+      // Valores más altos = menos overhead pero control menos preciso
+      updateInterval: 100, // 100ms por defecto (buen balance)
+    },
+
     // Configuración para descargas fragmentadas usando HTTP Range requests
     // Divide archivos grandes en múltiples fragmentos (chunks) que se descargan en paralelo
     // Mejora significativamente la velocidad para archivos grandes

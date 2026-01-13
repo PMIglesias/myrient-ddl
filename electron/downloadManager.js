@@ -109,7 +109,7 @@ const fs = require('fs');
 const path = require('path');
 const { net } = require('electron');
 const config = require('./config');
-const { logger, readJSONFile, writeJSONFile, sanitizeFilename, safeUnlink, validateDiskSpace } = require('./utils');
+const { logger, readJSONFile, writeJSONFile, sanitizeFilename, safeUnlink, validateDiskSpace, BandwidthManager } = require('./utils');
 const database = require('./database');
 const queueDatabase = require('./queueDatabase');
 const { DownloadState, DownloadPriority } = require('./queueDatabase');
@@ -209,6 +209,16 @@ class DownloadManager {
 
     // Circuit Breakers por host para aislar problemas de servidores específicos
     this.hostCircuitBreakers = new Map();
+
+    // BandwidthManager para control de ancho de banda
+    const bandwidthConfig = config.downloads.bandwidth || {};
+    this.bandwidthManager = new BandwidthManager({
+      maxBandwidthBytesPerSecond: bandwidthConfig.maxBandwidthBytesPerSecond || 0,
+      updateInterval: bandwidthConfig.updateInterval || 100,
+      enabled: bandwidthConfig.enabled !== false,
+      autoDetect: bandwidthConfig.autoDetect !== false,
+      distributionPercentages: bandwidthConfig.distributionPercentages || [40, 30, 30],
+    });
   }
 
   /**
@@ -319,6 +329,12 @@ class DownloadManager {
     // Limpiar referencias
     this.mainWindow = null;
     this.progressThrottler = null;
+
+    // Destruir BandwidthManager
+    if (this.bandwidthManager) {
+      this.bandwidthManager.destroy();
+      this.bandwidthManager = null;
+    }
 
     log.info('DownloadManager destruido');
   }
@@ -1383,6 +1399,7 @@ class DownloadManager {
       onProgress: info => this._onChunkedProgress(info),
       onComplete: info => this._onChunkedComplete(info),
       onError: (downloader, error) => this._onChunkedError(downloader, error),
+      bandwidthManager: this.bandwidthManager, // Pasar BandwidthManager
     });
 
     // Guardar referencia
@@ -1894,6 +1911,9 @@ class DownloadManager {
       actualResumeFromByte,
     });
 
+    // BANDWIDTH SHAPING: Registrar descarga para gestión de ancho de banda
+    this.bandwidthManager.registerDownload(id, false);
+
     // Variables de progreso
     const contentLength = parseInt(response.headers['content-length'] || 0, 10);
     const totalBytes = actualResumeFromByte + contentLength;
@@ -1908,6 +1928,10 @@ class DownloadManager {
       if (isCleanedUp) return;
       isCleanedUp = true;
       log.debug(`Cleanup de descarga ${id}: ${reason}`);
+      
+      // BANDWIDTH SHAPING: Desregistrar descarga
+      this.bandwidthManager.unregisterDownload(id);
+      
       this._removeDownloadHandlers(id, request, response, fileStream);
     };
 
@@ -1994,9 +2018,63 @@ class DownloadManager {
         return;
       }
 
+      // BANDWIDTH SHAPING: Obtener quota disponible
+      const quota = this.bandwidthManager.getQuota(id, null, chunk.length);
+      
+      if (!quota.allowed || quota.bytesAllowed === 0) {
+        // No hay quota disponible, pausar respuesta
+        if (!response.isPaused) {
+          response.pause();
+        }
+        
+        // Reanudar cuando haya quota disponible (usar un pequeño delay)
+        setTimeout(() => {
+          if (!downloadError && !isCleanedUp && this.hasActiveDownload(id) && !response.destroyed) {
+            const newQuota = this.bandwidthManager.getQuota(id, null, chunk.length);
+            if (newQuota.allowed && newQuota.bytesAllowed > 0) {
+              response.resume();
+            } else {
+              // Aún no hay quota, pausar de nuevo y verificar más tarde
+              response.pause();
+              setTimeout(() => {
+                if (!downloadError && !isCleanedUp && this.hasActiveDownload(id) && !response.destroyed) {
+                  response.resume();
+                }
+              }, 10);
+            }
+          }
+        }, 10);
+        return;
+      }
+
+      // Hay quota disponible, procesar solo los bytes permitidos
+      let bytesToWrite = Math.min(chunk.length, quota.bytesAllowed);
+      let remainingChunk = chunk;
+
+      // Si el chunk es más grande que la quota, escribir solo la parte permitida
+      if (chunk.length > quota.bytesAllowed) {
+        remainingChunk = chunk.slice(0, quota.bytesAllowed);
+        // El resto del chunk se procesará en la próxima iteración
+        // Pausar respuesta temporalmente
+        if (!response.isPaused) {
+          response.pause();
+        }
+        // Reanudar después de escribir
+        setImmediate(() => {
+          if (!downloadError && !isCleanedUp && this.hasActiveDownload(id) && !response.destroyed) {
+            response.resume();
+          }
+        });
+      }
+
       // Escribir chunk con backpressure mejorado
       writeEvents++;
-      const canContinue = fileStream.write(chunk);
+      const canContinue = fileStream.write(remainingChunk);
+      
+      // Consumir quota después de escribir
+      if (bytesToWrite > 0) {
+        this.bandwidthManager.consumeQuota(id, bytesToWrite);
+      }
 
       if (!canContinue) {
         // Backpressure detectado

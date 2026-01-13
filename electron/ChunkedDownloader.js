@@ -115,6 +115,9 @@ class ChunkDownload {
     // Referencia al ChunkedDownloader padre (para circuit breaker)
     this.chunkedDownloader = options.chunkedDownloader || null;
 
+    // BandwidthManager para control de ancho de banda
+    this.bandwidthManager = options.bandwidthManager || null;
+
     // Callbacks
     this.onProgress = options.onProgress || (() => {});
     this.onComplete = options.onComplete || (() => {});
@@ -147,6 +150,11 @@ class ChunkDownload {
     this.startTime = Date.now();
     this.lastUpdate = this.startTime;
     this.isAborted = false;
+
+    // BANDWIDTH SHAPING: Registrar chunk para gestión de ancho de banda
+    if (this.bandwidthManager) {
+      this.bandwidthManager.registerDownload(this.downloadId, true, this.chunkIndex);
+    }
 
     // Calcular bytes a descargar considerando reanudación
     const actualStartByte = this.startByte + this.downloadedBytes;
@@ -321,14 +329,71 @@ class ChunkDownload {
       this._handleError(error);
     });
 
-    // CRÍTICO: Handler mejorado para datos con manejo robusto de backpressure
+    // CRÍTICO: Handler mejorado para datos con manejo robusto de backpressure y bandwidth shaping
     response.on('data', chunk => {
       if (this.isAborted || !this.fileStream || this.fileStream.destroyed) {
         return;
       }
 
+      // BANDWIDTH SHAPING: Obtener quota disponible
+      let bytesToWrite = chunk.length;
+      let remainingChunk = chunk;
+      
+      if (this.bandwidthManager) {
+        const quota = this.bandwidthManager.getQuota(this.downloadId, this.chunkIndex, chunk.length);
+        
+        if (!quota.allowed || quota.bytesAllowed === 0) {
+          // No hay quota disponible, pausar respuesta
+          if (!response.isPaused) {
+            response.pause();
+          }
+          
+          // Reanudar cuando haya quota disponible (usar un pequeño delay)
+          setTimeout(() => {
+            if (!this.isAborted && !this.fileStream.destroyed && !response.destroyed) {
+              const newQuota = this.bandwidthManager.getQuota(this.downloadId, this.chunkIndex, chunk.length);
+              if (newQuota.allowed && newQuota.bytesAllowed > 0) {
+                response.resume();
+              } else {
+                // Aún no hay quota, pausar de nuevo y verificar más tarde
+                response.pause();
+                setTimeout(() => {
+                  if (!this.isAborted && !response.destroyed) {
+                    response.resume();
+                  }
+                }, 10);
+              }
+            }
+          }, 10);
+          return;
+        }
+
+        // Hay quota disponible, procesar solo los bytes permitidos
+        bytesToWrite = Math.min(chunk.length, quota.bytesAllowed);
+        
+        if (chunk.length > quota.bytesAllowed) {
+          remainingChunk = chunk.slice(0, quota.bytesAllowed);
+          // El resto del chunk se procesará en la próxima iteración
+          // Pausar respuesta temporalmente
+          if (!response.isPaused) {
+            response.pause();
+          }
+          // Reanudar después de escribir
+          setImmediate(() => {
+            if (!this.isAborted && !this.fileStream.destroyed && !response.destroyed) {
+              response.resume();
+            }
+          });
+        }
+      }
+
       // Escribir con backpressure mejorado
-      const canContinue = this.fileStream.write(chunk);
+      const canContinue = this.fileStream.write(remainingChunk);
+      
+      // BANDWIDTH SHAPING: Consumir quota después de escribir
+      if (this.bandwidthManager && bytesToWrite > 0) {
+        this.bandwidthManager.consumeQuota(this.downloadId, bytesToWrite, this.chunkIndex);
+      }
 
       if (!canContinue && !isPaused) {
         // Backpressure detectado - pausar respuesta
@@ -561,6 +626,11 @@ class ChunkDownload {
    * @returns {void}
    */
   _cleanup(keepTempFile = true) {
+    // BANDWIDTH SHAPING: Desregistrar chunk
+    if (this.bandwidthManager) {
+      this.bandwidthManager.unregisterDownload(this.downloadId, this.chunkIndex);
+    }
+
     // Abortar request
     if (this.request) {
       try {
@@ -725,6 +795,9 @@ class ChunkedDownloader {
     // throttling ligero reduce las llamadas innecesarias cuando hay múltiples chunks
     this.lastProgressUpdate = 0;
     this.progressUpdateInterval = 50; // ms - actualizar cada 50ms como máximo (suficientemente frecuente)
+
+    // BandwidthManager para control de ancho de banda
+    this.bandwidthManager = options.bandwidthManager || null;
 
     // Progress batcher
     this.progressBatcher = new ProgressBatcher(
@@ -1097,6 +1170,7 @@ class ChunkedDownloader {
             tempFile: dbChunk.temp_file || this._getChunkTempFile(dbChunk.chunk_index),
             url: this.url,
             chunkedDownloader: this, // Referencia al ChunkedDownloader para circuit breaker
+            bandwidthManager: this.bandwidthManager, // Pasar BandwidthManager
             onProgress: info => this._onChunkProgress(info),
             onComplete: chunk => this._onChunkComplete(chunk),
             onError: (chunk, error) => this._onChunkError(chunk, error),
@@ -1273,6 +1347,7 @@ class ChunkedDownloader {
             tempFile: this._getChunkTempFile(index),
             url: this.url,
             chunkedDownloader: this, // Referencia al ChunkedDownloader para circuit breaker
+            bandwidthManager: this.bandwidthManager, // Pasar BandwidthManager
             onProgress: info => this._onChunkProgress(info),
             onComplete: chunk => this._onChunkComplete(chunk),
             onError: (chunk, error) => this._onChunkError(chunk, error),
